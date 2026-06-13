@@ -1,0 +1,26 @@
+apiVersion: airlock.dev/v1alpha1
+kind: AirlockPolicy
+metadata:
+  name: code-agent
+spec:
+  secretProviderRef:
+    name: default-vault
+    namespace: airlock-system
+  workload:
+    spiffeId: spiffe://airlock.local/ns/demo/sa/code-agent/component/airlock-proxy-worker
+    namespace: demo
+    serviceAccount: code-agent
+  egress:
+    - name: echo-upstream
+      scheme: http
+      host: echo-upstream.demo.svc.cluster.local
+      port: 8080
+      rewrites:
+        - target: header
+          name: Authorization
+          valueTemplate: "Bearer {{secret}}"
+          valueFrom:
+            provider: vault
+            name: test-token
+            path: airlock/openai/code-agent
+            key: api_key

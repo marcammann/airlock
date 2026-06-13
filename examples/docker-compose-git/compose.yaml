@@ -1,0 +1,34 @@
+services:
+  control-plane:
+    build:
+      context: ../..
+      dockerfile: control-plane/Dockerfile
+    command:
+      - --listen=:8080
+      - --policy=/airlock/policies/github.yaml
+      - --auth-mode=dev-token
+      - --dev-token=${AIRLOCK_DEV_TOKEN:-compose-dev-token}
+    ports:
+      - "18082:8080"
+    volumes:
+      - ./policy/github.yaml:/airlock/policies/github.yaml:ro
+
+  git-app:
+    build:
+      context: ../..
+      dockerfile: examples/docker-compose-git/Dockerfile.app
+    depends_on:
+      - control-plane
+    environment:
+      AIRLOCK_CONTROL_PLANE_URL: http://control-plane:8080
+      AIRLOCK_DEV_TOKEN: ${AIRLOCK_DEV_TOKEN:-compose-dev-token}
+      GITHUB_BASIC_USER: ${GITHUB_BASIC_USER:-x-access-token}
+      GITHUB_PAT: ${GITHUB_PAT:?set GITHUB_PAT to a token with repo access}
+      GITHUB_REPO: ${GITHUB_REPO:-marcammann/portfolio}
+      GIT_DEPTH: ${GIT_DEPTH:-1}
+      EXPECT_DIRECT_CLONE_DENIED: ${EXPECT_DIRECT_CLONE_DENIED:-true}
+    volumes:
+      - git-checkout:/work
+
+volumes:
+  git-checkout:

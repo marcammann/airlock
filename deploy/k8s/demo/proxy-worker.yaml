@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airlock-proxy-worker
+  namespace: demo
+  labels:
+    app.kubernetes.io/name: airlock-proxy-worker
+    app.kubernetes.io/part-of: airlock
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: airlock-proxy-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: airlock-proxy-worker
+        app.kubernetes.io/part-of: airlock
+    spec:
+      serviceAccountName: code-agent
+      containers:
+        - name: proxy-worker
+          image: airlock-proxy-worker:dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - --proxy
+            - http:builtin@127.0.0.1:18080
+            - --control-plane-url
+            - https://airlock-control-plane.airlock-system.svc.cluster.local:8443
+            - --control-plane-auth
+            - spiffe
+            - --control-plane-server-id
+            - spiffe://airlock.local/ns/airlock-system/sa/airlock-control-plane
+            - --workload-identity
+            - spiffe://airlock.local/ns/demo/sa/code-agent/component/airlock-proxy-worker
+            - --spiffe-socket
+            - unix:///run/spire/agent-sockets/spire-agent.sock
+          volumeMounts:
+            - name: spire-agent-socket
+              mountPath: /run/spire/agent-sockets
+              readOnly: true
+      volumes:
+        - name: spire-agent-socket
+          hostPath:
+            path: /run/spire/agent-sockets
+            type: Directory

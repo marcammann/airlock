@@ -1,0 +1,19 @@
+services:
+  git-app:
+    build:
+      context: ../..
+      dockerfile: examples/docker-compose-git/Dockerfile.app
+    environment:
+      AIRLOCK_NO_CONTROL_PLANE: "true"
+      AIRLOCK_POLICY_PATH: /airlock/policies/github.yaml
+      GITHUB_BASIC_USER: ${GITHUB_BASIC_USER:-x-access-token}
+      GITHUB_PAT: ${GITHUB_PAT:?set GITHUB_PAT to a token with repo access}
+      GITHUB_REPO: ${GITHUB_REPO:-marcammann/portfolio}
+      GIT_DEPTH: ${GIT_DEPTH:-1}
+      EXPECT_DIRECT_CLONE_DENIED: ${EXPECT_DIRECT_CLONE_DENIED:-true}
+    volumes:
+      - ./policy/github.yaml:/airlock/policies/github.yaml:ro
+      - git-checkout:/work
+
+volumes:
+  git-checkout:

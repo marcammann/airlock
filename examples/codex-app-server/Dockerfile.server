@@ -1,0 +1,22 @@
+FROM node:24-bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      bubblewrap \
+      curl \
+      git \
+      procps \
+      ripgrep \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g @openai/codex
+
+RUN set -eux; \
+    codex_binary="$(find /usr/local/lib/node_modules/@openai/codex/node_modules/@openai -path '*/vendor/*/bin/codex' -type f | head -n 1)"; \
+    mkdir -p /root/.codex/packages/standalone/current; \
+    cp "$codex_binary" /root/.codex/packages/standalone/current/codex; \
+    chmod +x /root/.codex/packages/standalone/current/codex
+
+WORKDIR /workspace
+ENTRYPOINT ["codex"]

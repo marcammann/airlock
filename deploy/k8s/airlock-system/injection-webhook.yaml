@@ -1,0 +1,32 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: airlock-sidecar-injector
+  labels:
+    app.kubernetes.io/name: airlock-control-plane
+    app.kubernetes.io/part-of: airlock
+webhooks:
+  - name: sidecar-injector.airlock.dev
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    namespaceSelector:
+      matchLabels:
+        airlock.dev/injection: enabled
+    objectSelector:
+      matchLabels:
+        airlock.dev/enabled: "true"
+    rules:
+      - operations: ["CREATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+        scope: Namespaced
+    clientConfig:
+      service:
+        name: airlock-control-plane
+        namespace: airlock-system
+        path: /mutate/v1/pods
+        port: 9443
+      caBundle: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUR0akNDQXA2Z0F3SUJBZ0lVZWhqTjVCY3hWeWhucXlmZ2E0ZnVpMjFqRFVFd0RRWUpLb1pJaHZjTkFRRUwKQlFBd016RXhNQzhHQTFVRUF3d29ZV2x5Ykc5amF5MWpiMjUwY205c0xYQnNZVzVsTG1GcGNteHZZMnN0YzNsegpkR1Z0TG5OMll6QWVGdzB5TmpBMk1URXlNVFU1TVRCYUZ3MHpOakEyTURneU1UVTVNVEJhTURNeE1UQXZCZ05WCkJBTU1LR0ZwY214dlkyc3RZMjl1ZEhKdmJDMXdiR0Z1WlM1aGFYSnNiMk5yTFhONWMzUmxiUzV6ZG1Nd2dnRWkKTUEwR0NTcUdTSWIzRFFFQkFRVUFBNElCRHdBd2dnRUtBb0lCQVFDZjA0cXY0OXhKS2E2aUNZVmUzT01XL3ZHeQpNeHVoUG5TZjB5TWNiRENwOE1Ca3JiNnEwUVoraTJGYVFwUkxyYi9Qb1RZeHNpSEdXbkMxRXJKUlgvSVpzNXIrCjZxOERCODRhbHpHRUpkYWVVSmtXRWJ3c1E0d1NQQUE5bjNJa244aS9OZHNvRTQ5R0VhdkxQcG1LTm0wcDV3aWwKZ0txZGxFZkV0dTArT2FhWk9FaExkMGFyQzBnU0o5VWordW83ejVuUlpUMUVTLzJIc2VHN2R3L1BzMEIvQXhVVQptYjhja1RsaHFSTmpiYXo3a2gwVzQvYkdWRm9IZ29haUIrNDJDc3NXMkkvMTZ4Y1I0YzhWOWFGQ08xNks0UGw0CktyclhDZlhkb2FaOHBjM3BTN2lGWUpZSC9jbC9oM3dqVE1iNWFZb2kyRjBwbzRxUGp0WUo3RExkOVBsOUFnTUIKQUFHamdjRXdnYjR3SFFZRFZSME9CQllFRkRKRzdSbGhaOWpnNUtIdUIxc1p1YUxTRXVkU01COEdBMVVkSXdRWQpNQmFBRkRKRzdSbGhaOWpnNUtIdUIxc1p1YUxTRXVkU01BOEdBMVVkRXdFQi93UUZNQU1CQWY4d2F3WURWUjBSCkJHUXdZb0lvWVdseWJHOWpheTFqYjI1MGNtOXNMWEJzWVc1bExtRnBjbXh2WTJzdGMzbHpkR1Z0TG5OMlk0STIKWVdseWJHOWpheTFqYjI1MGNtOXNMWEJzWVc1bExtRnBjbXh2WTJzdGMzbHpkR1Z0TG5OMll5NWpiSFZ6ZEdWeQpMbXh2WTJGc01BMEdDU3FHU0liM0RRRUJDd1VBQTRJQkFRQW8zbVJYd2VIdzNFblJML0xlN1pDRFExRy9yOGNxCndVQzVkUHBKTTNuSXo3cWU5OXNZY21Fb2FORllyYWVIRHRzS3V6d3ZLWjNZS254dEFrMFA4WHhyNFZQYnFWNFkKUHovdExkRThNQTNwbmZjdGdybjFtR1oybExHSkxCR3lNZWQ0eENwVXRsd3IraGdSeFl3NFFOaHRsbUNJUzk0YwpvSmxIT2EybHVJQ0dldlRjbThLeXUwNmxzUWUyOWNpY3NxQ2RmdURIN1RiQk1nSlNLMTNyZ29xTjZDNmR5K1IxCk9DS043N2U0L2J6a3R0OEoxR1dqUTcvN0FyRGNlbUFhQjRvNTJrOGM5L3RvMkdkdkRNMFhnMDdTRWc5WXQ2TUQKN21Nd2E2TG1Ndjd4OWNkT3pCb0ZDMGlrK21HL3JYZC9tc1JZZWRVZDN5NWl2bFQ1Um05THdRNWQKLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=

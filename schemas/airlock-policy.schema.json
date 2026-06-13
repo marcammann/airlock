@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://airlock.dev/schemas/airlock-policy.schema.json",
+  "title": "AirlockPolicy",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "const": "airlock.dev/v1alpha1"
+    },
+    "kind": {
+      "const": "AirlockPolicy"
+    },
+    "metadata": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "namespace": {
+          "type": "string"
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "required": ["workload", "egress"],
+      "additionalProperties": false,
+      "properties": {
+        "secretProviderRef": {
+          "type": "object",
+          "required": ["name"],
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "namespace": {
+              "type": "string"
+            }
+          }
+        },
+        "workload": {
+          "type": "object",
+          "required": ["spiffeId"],
+          "additionalProperties": false,
+          "properties": {
+            "spiffeId": {
+              "type": "string",
+              "pattern": "^spiffe://"
+            },
+            "namespace": {
+              "type": "string"
+            },
+            "serviceAccount": {
+              "type": "string"
+            }
+          }
+        },
+        "egress": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["name", "host"],
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "scheme": {
+                "type": "string",
+                "enum": ["http", "https"]
+              },
+              "host": {
+                "type": "string",
+                "minLength": 1
+              },
+              "port": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535
+              },
+              "rewrites": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["target", "name", "valueFrom"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "target": {
+                      "type": "string",
+                      "enum": ["header"]
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "valueTemplate": {
+                      "type": "string"
+                    },
+                    "valueFrom": {
+                      "$ref": "#/$defs/secretRef"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "secretRef": {
+      "type": "object",
+      "required": ["provider"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": ["env", "file", "vault"]
+        },
+        "name": {
+          "type": "string"
+        },
+        "mount": {
+          "type": "string"
+        },
+        "engine": {
+          "type": "string",
+          "enum": ["kv-v2"]
+        },
+        "path": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "env": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

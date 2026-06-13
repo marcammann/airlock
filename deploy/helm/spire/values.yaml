@@ -1,0 +1,15 @@
+global:
+  spire:
+    clusterName: airlock
+    trustDomain: airlock.local
+    namespaces:
+      system:
+        name: spire-system
+      server:
+        name: spire-system
+
+spiffe-csi-driver:
+  enabled: false
+
+spiffe-oidc-discovery-provider:
+  enabled: false

@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - crds/airlock.dev_secretproviderconfigs.yaml
+  - crds/airlock.dev_airlockpolicies.yaml
+  - namespaces.yaml
+  - spire-system/airlock-spiffe-ids.yaml
+  - airlock-system/control-plane-rbac.yaml
+  - airlock-system/webhook-tls.yaml
+  - airlock-system/control-plane-skeleton.yaml
+  - airlock-system/injection-webhook.yaml
+  - airlock-system/secret-provider-configs/default-vault.yaml
+  - airlock-system/policies/code-agent.yaml
+  - vault/vault-dev.yaml
+  - demo/envoy-config.yaml
+  - demo/echo-upstream.yaml
+  - demo/code-agent.yaml
+
+generatorOptions:
+  disableNameSuffixHash: true

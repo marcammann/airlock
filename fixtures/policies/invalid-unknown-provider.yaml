@@ -1,0 +1,19 @@
+apiVersion: airlock.dev/v1alpha1
+kind: AirlockPolicy
+metadata:
+  name: unknown-provider
+spec:
+  workload:
+    spiffeId: spiffe://airlock.local/ns/demo/sa/code-agent/component/airlock-proxy-worker
+  egress:
+    - name: openai-api
+      scheme: https
+      host: api.example.test
+      rewrites:
+        - target: header
+          name: Authorization
+          valueTemplate: "Bearer {{secret}}"
+          valueFrom:
+            provider: aws-secrets-manager
+            name: test-token
+

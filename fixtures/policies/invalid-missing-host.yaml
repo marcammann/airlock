@@ -1,0 +1,19 @@
+apiVersion: airlock.dev/v1alpha1
+kind: AirlockPolicy
+metadata:
+  name: missing-host
+spec:
+  workload:
+    spiffeId: spiffe://airlock.local/ns/demo/sa/code-agent/component/airlock-proxy-worker
+  egress:
+    - name: openai-api
+      scheme: https
+      rewrites:
+        - target: header
+          name: Authorization
+          valueTemplate: "Bearer {{secret}}"
+          valueFrom:
+            provider: env
+            name: test-token
+            env: AIRLOCK_TEST_TOKEN
+

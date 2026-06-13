@@ -1,0 +1,136 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: airlockpolicies.airlock.dev
+spec:
+  group: airlock.dev
+  scope: Namespaced
+  names:
+    plural: airlockpolicies
+    singular: airlockpolicy
+    kind: AirlockPolicy
+    shortNames:
+      - alp
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Ready
+          type: string
+          jsonPath: .status.conditions[?(@.type=="Ready")].status
+        - name: PolicyHash
+          type: string
+          jsonPath: .status.policyHash
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: ["spec"]
+          properties:
+            spec:
+              type: object
+              required: ["workload", "egress"]
+              properties:
+                secretProviderRef:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                    namespace:
+                      type: string
+                workload:
+                  type: object
+                  required: ["spiffeId"]
+                  properties:
+                    spiffeId:
+                      type: string
+                    namespace:
+                      type: string
+                    serviceAccount:
+                      type: string
+                egress:
+                  type: array
+                  items:
+                    type: object
+                    required: ["name", "host"]
+                    properties:
+                      name:
+                        type: string
+                      scheme:
+                        type: string
+                        enum: ["http", "https"]
+                      host:
+                        type: string
+                      port:
+                        type: integer
+                        minimum: 1
+                        maximum: 65535
+                      rewrites:
+                        type: array
+                        items:
+                          type: object
+                          required: ["target", "name", "valueFrom"]
+                          properties:
+                            target:
+                              type: string
+                              enum: ["header"]
+                            name:
+                              type: string
+                            valueTemplate:
+                              type: string
+                            valueFrom:
+                              type: object
+                              required: ["provider"]
+                              properties:
+                                provider:
+                                  type: string
+                                  enum: ["env", "file", "vault"]
+                                name:
+                                  type: string
+                                mount:
+                                  type: string
+                                engine:
+                                  type: string
+                                  enum: ["kv-v2"]
+                                path:
+                                  type: string
+                                key:
+                                  type: string
+                                env:
+                                  type: string
+                                file:
+                                  type: string
+            status:
+              type: object
+              properties:
+                observedGeneration:
+                  type: integer
+                  format: int64
+                policyHash:
+                  type: string
+                spire:
+                  type: object
+                  properties:
+                    ready:
+                      type: boolean
+                vault:
+                  type: object
+                  properties:
+                    ready:
+                      type: boolean
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required: ["type", "status"]
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      reason:
+                        type: string
+                      message:
+                        type: string

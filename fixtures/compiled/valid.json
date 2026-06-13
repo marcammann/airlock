@@ -1,0 +1,30 @@
+{
+  "version": "airlock.dev/v1alpha1",
+  "policyName": "code-agent",
+  "workload": {
+    "spiffeId": "spiffe://airlock.local/ns/demo/sa/code-agent/component/airlock-proxy-worker",
+    "namespace": "demo",
+    "serviceAccount": "code-agent"
+  },
+  "egress": [
+    {
+      "name": "openai-api",
+      "scheme": "https",
+      "host": "api.example.test",
+      "port": 443,
+      "rewrites": [
+        {
+          "target": "header",
+          "name": "Authorization",
+          "valueTemplate": "Bearer {{secret}}",
+          "valueFrom": {
+            "provider": "env",
+            "name": "test-token",
+            "env": "AIRLOCK_TEST_TOKEN"
+          }
+        }
+      ]
+    }
+  ]
+}
+

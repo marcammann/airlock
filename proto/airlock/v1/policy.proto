@@ -1,0 +1,97 @@
+syntax = "proto3";
+
+package airlock.v1;
+
+option go_package = "github.com/marc/airlock/control-plane/gen/airlock/v1;airlockv1";
+
+message WorkloadIdentity {
+  string spiffe_id = 1;
+  string namespace = 2;
+  string service_account = 3;
+}
+
+message AirlockPolicy {
+  string api_version = 1;
+  string name = 2;
+  WorkloadIdentity workload = 3;
+  repeated EgressRule egress = 4;
+  SecretProviderRef secret_provider_ref = 5;
+}
+
+message SecretProviderRef {
+  string name = 1;
+  string namespace = 2;
+}
+
+message EgressRule {
+  string name = 1;
+  string scheme = 2;
+  string host = 3;
+  uint32 port = 4;
+  repeated RewriteRule rewrites = 5;
+}
+
+message RewriteRule {
+  string target = 1;
+  string name = 2;
+  string value_template = 3;
+  SecretRef value_from = 4;
+}
+
+message SecretRef {
+  string provider = 1;
+  string name = 2;
+  string mount = 3;
+  string engine = 4;
+  string path = 5;
+  string key = 6;
+  string env = 7;
+  string file = 8;
+}
+
+message CompiledPolicy {
+  string version = 1;
+  string policy_name = 2;
+  WorkloadIdentity workload = 3;
+  repeated CompiledEgressRule egress = 4;
+  CompiledSecretProvider secret_provider = 5;
+}
+
+message CompiledEgressRule {
+  string name = 1;
+  string scheme = 2;
+  string host = 3;
+  uint32 port = 4;
+  repeated RewriteRule rewrites = 5;
+}
+
+message CompiledSecretProvider {
+  string provider = 1;
+  CompiledVaultProvider vault = 2;
+}
+
+message CompiledVaultProvider {
+  string address = 1;
+  string auth_mount = 2;
+  string audience = 3;
+  string role = 4;
+}
+
+message GetPolicyRequest {
+  WorkloadIdentity workload = 1;
+}
+
+message GetPolicyResponse {
+  CompiledPolicy policy = 1;
+  PolicyStatus status = 2;
+}
+
+message PolicyStatus {
+  bool valid = 1;
+  string version = 2;
+  repeated string errors = 3;
+}
+
+service PolicyService {
+  rpc GetPolicy(GetPolicyRequest) returns (GetPolicyResponse);
+}

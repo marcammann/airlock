@@ -1,0 +1,22 @@
+apiVersion: airlock.dev/v1alpha1
+kind: AirlockPolicy
+metadata:
+  name: unsafe-vault-path
+spec:
+  workload:
+    spiffeId: spiffe://airlock.local/ns/demo/sa/code-agent/component/airlock-proxy-worker
+  egress:
+    - name: openai-api
+      scheme: https
+      host: api.example.test
+      rewrites:
+        - target: header
+          name: Authorization
+          valueTemplate: "Bearer {{secret}}"
+          valueFrom:
+            provider: vault
+            mount: secret
+            engine: kv-v2
+            path: sys/policies/acl/root
+            key: api_key
+

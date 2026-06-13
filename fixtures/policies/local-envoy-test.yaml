@@ -1,0 +1,23 @@
+apiVersion: airlock.dev/v1alpha1
+kind: AirlockPolicy
+metadata:
+  name: local-envoy-test
+spec:
+  workload:
+    spiffeId: spiffe://airlock.local/ns/demo/sa/code-agent/component/airlock-proxy-worker
+    namespace: demo
+    serviceAccount: code-agent
+  egress:
+    - name: local-envoy-upstream
+      scheme: http
+      host: 127.0.0.1
+      port: 19081
+      rewrites:
+        - target: header
+          name: Authorization
+          valueTemplate: "Bearer {{secret}}"
+          valueFrom:
+            provider: env
+            name: local-token
+            env: AIRLOCK_TEST_TOKEN
+

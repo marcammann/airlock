@@ -1,0 +1,6 @@
+target/
+proxy-worker-rs/target/
+.cache/
+dist/
+.env
+.archive

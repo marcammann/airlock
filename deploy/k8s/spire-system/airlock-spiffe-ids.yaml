@@ -1,0 +1,13 @@
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterSPIFFEID
+metadata:
+  name: airlock-control-plane
+spec:
+  className: spire-system-spire
+  spiffeIDTemplate: spiffe://airlock.local/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: airlock-control-plane
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: airlock-system
