@@ -27,15 +27,18 @@ the Go control plane plus the Go proxy worker.
 ## Repository Layout
 
 ```text
-control-plane/    Go control plane and Kubernetes reconcilers
-proxy-worker/     Go proxy worker, the active worker implementation
+api/              shared Go API and wire contract types
+cmd/              Go binaries
+internal/         Go control plane, policy, and proxy worker internals
+control-plane/    control-plane image build assets
+proxy-worker/     proxy-worker image build assets
 web-ui/           Next.js and Tailwind admin console
 deploy/           kind, Kubernetes, Envoy, and Helm assets
 examples/         Docker Compose, Kubernetes, and integration examples
 fixtures/         shared policy and provider fixtures
 proto/            protobuf contracts
 schemas/          policy schema files
-scripts/          local and Kubernetes smoke tests
+scripts/smoke/    local and Kubernetes smoke tests
 docs/             design notes and contributor guides
 ```
 
@@ -310,7 +313,7 @@ policy paths such as `github/token` to environment-specific paths such as
 `prod/github/token`.
 
 Secret provider code is split by responsibility under
-`proxy-worker/internal/worker`. See
+`internal/proxyworker`. See
 [`docs/contributing/secret-providers.md`](docs/contributing/secret-providers.md)
 for the provider layout and contribution checklist.
 

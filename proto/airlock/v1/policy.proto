@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package airlock.v1;
 
-option go_package = "github.com/marc/airlock/control-plane/gen/airlock/v1;airlockv1";
+option go_package = "github.com/marcammann/airlock/gen/airlock/v1;airlockv1";
 
 message WorkloadIdentity {
   string spiffe_id = 1;

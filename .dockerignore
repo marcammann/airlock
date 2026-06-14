@@ -1,0 +1,10 @@
+.git/
+.cache/
+dist/
+.env
+.DS_Store
+._*
+Thumbs.db
+desktop.ini
+
+web-ui/

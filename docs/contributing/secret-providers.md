@@ -16,7 +16,7 @@ fallback.
 
 ## Current Layout
 
-The proxy worker keeps provider code in `proxy-worker/internal/worker`:
+The proxy worker keeps provider code in `internal/proxyworker`:
 
 - `secret_provider.go`: common `SecretProvider` interface.
 - `secret_provider_env_file.go`: local env/file provider.

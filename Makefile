@@ -7,6 +7,8 @@ SPIRE_VALUES ?= deploy/helm/spire/values.yaml
 CONTROL_PLANE_IMAGE ?= airlock-control-plane:dev
 PROXY_WORKER_IMAGE ?= airlock-proxy-worker:dev
 WEB_UI_IMAGE ?= airlock-web-ui:dev
+GO_TEST_PACKAGES ?= ./api/... ./cmd/... ./internal/... ./examples/compose/git
+SMOKE_SCRIPTS_DIR ?= scripts/smoke
 
 .PHONY: kind-up kind-down build-control-plane-image load-control-plane-image build-proxy-worker-image load-proxy-worker-image build-web-ui-image build-images load-images test-proxy-worker build-proxy-worker proxy-worker-local-smoke test-go-proxy-worker build-go-proxy-worker build-go-proxy-worker-image go-proxy-worker-local-smoke test-web-ui web-ui-dev install-spire install-vault install-airlock deploy-demo install-baseline demo-smoke local-control-plane-smoke spiffe-policy-smoke vault-jwt-setup k8s-egress-smoke injected-sidecar-smoke existing-envoy-smoke single-local-smoke security-smoke fail-closed-smoke fail-closed-k8s-smoke tls-termination-smoke envoy-sds-tls-smoke envoy-connect-sds-smoke github-connect-sds-smoke compose-git-demo compose-git-envoy-demo compose-git-no-control-plane-demo compose-git-clean compose-proxy-observability-up compose-proxy-observability-logs compose-proxy-observability-down compose-proxy-observability-clean opencode-headless-up opencode-headless-attach opencode-headless-logs opencode-headless-down opencode-headless-clean codex-app-server-up codex-app-server-connect codex-app-server-logs codex-app-server-down codex-app-server-clean test-e2e demo test
 
@@ -36,14 +38,14 @@ build-images: build-control-plane-image build-proxy-worker-image
 load-images: load-control-plane-image load-proxy-worker-image
 
 test-proxy-worker:
-	cd proxy-worker && go test ./...
+	go test ./cmd/airlock-proxy-worker ./internal/proxyworker
 
 build-proxy-worker:
 	mkdir -p dist
-	cd proxy-worker && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o ../dist/airlock-proxy-worker ./cmd/airlock-proxy-worker
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o dist/airlock-proxy-worker ./cmd/airlock-proxy-worker
 
 proxy-worker-local-smoke: build-proxy-worker
-	./scripts/proxy-worker-local-smoke.sh
+	./$(SMOKE_SCRIPTS_DIR)/proxy-worker-local-smoke.sh
 
 test-go-proxy-worker: test-proxy-worker
 
@@ -104,49 +106,49 @@ install-baseline: install-airlock
 	$(MAKE) deploy-demo
 
 demo-smoke:
-	./scripts/demo-smoke.sh
+	./$(SMOKE_SCRIPTS_DIR)/demo-smoke.sh
 
 local-control-plane-smoke:
-	./scripts/local-control-plane-smoke.sh
+	./$(SMOKE_SCRIPTS_DIR)/local-control-plane-smoke.sh
 
 spiffe-policy-smoke:
-	./scripts/spiffe-policy-smoke.sh
+	./$(SMOKE_SCRIPTS_DIR)/spiffe-policy-smoke.sh
 
 vault-jwt-setup:
-	./scripts/vault-jwt-setup.sh
+	./$(EXAMPLES_K8S_DIR)/vault-jwt-setup.sh
 
 k8s-egress-smoke:
-	./scripts/k8s-egress-smoke.sh
+	./$(SMOKE_SCRIPTS_DIR)/k8s-egress-smoke.sh
 
 injected-sidecar-smoke:
-	SMOKE_NAME=injected-sidecar WORKLOAD_DEPLOYMENT=code-agent-injected WORKLOAD_LABEL=app.kubernetes.io/name=code-agent-injected WORKLOAD_MANIFEST=$(EXAMPLES_K8S_DIR)/injected-sidecar/code-agent-injected.yaml ./scripts/k8s-egress-smoke.sh
+	SMOKE_NAME=injected-sidecar WORKLOAD_DEPLOYMENT=code-agent-injected WORKLOAD_LABEL=app.kubernetes.io/name=code-agent-injected WORKLOAD_MANIFEST=$(EXAMPLES_K8S_DIR)/injected-sidecar/code-agent-injected.yaml ./$(SMOKE_SCRIPTS_DIR)/k8s-egress-smoke.sh
 
 existing-envoy-smoke:
-	SMOKE_NAME=existing-envoy WORKLOAD_DEPLOYMENT=code-agent-existing-envoy WORKLOAD_LABEL=app.kubernetes.io/name=code-agent-existing-envoy WORKLOAD_MANIFEST=$(EXAMPLES_K8S_DIR)/existing-envoy/code-agent-existing-envoy.yaml ALLOW_SOURCE_ENVOY=true ./scripts/k8s-egress-smoke.sh
+	SMOKE_NAME=existing-envoy WORKLOAD_DEPLOYMENT=code-agent-existing-envoy WORKLOAD_LABEL=app.kubernetes.io/name=code-agent-existing-envoy WORKLOAD_MANIFEST=$(EXAMPLES_K8S_DIR)/existing-envoy/code-agent-existing-envoy.yaml ALLOW_SOURCE_ENVOY=true ./$(SMOKE_SCRIPTS_DIR)/k8s-egress-smoke.sh
 
 single-local-smoke:
-	./scripts/single-local-smoke.sh
+	./$(SMOKE_SCRIPTS_DIR)/single-local-smoke.sh
 
 security-smoke:
-	./scripts/security-smoke.sh
+	./$(SMOKE_SCRIPTS_DIR)/security-smoke.sh
 
 fail-closed-smoke:
-	./scripts/fail-closed-smoke.sh
+	./$(SMOKE_SCRIPTS_DIR)/fail-closed-smoke.sh
 
 fail-closed-k8s-smoke:
-	./scripts/fail-closed-k8s-smoke.sh
+	./$(SMOKE_SCRIPTS_DIR)/fail-closed-k8s-smoke.sh
 
 tls-termination-smoke:
-	./scripts/tls-termination-smoke.sh
+	./$(SMOKE_SCRIPTS_DIR)/tls-termination-smoke.sh
 
 envoy-sds-tls-smoke:
-	./scripts/envoy-sds-tls-smoke.sh
+	./$(SMOKE_SCRIPTS_DIR)/envoy-sds-tls-smoke.sh
 
 envoy-connect-sds-smoke:
-	./scripts/envoy-connect-sds-smoke.sh
+	./$(SMOKE_SCRIPTS_DIR)/envoy-connect-sds-smoke.sh
 
 github-connect-sds-smoke:
-	./scripts/github-connect-sds-smoke.sh
+	./$(SMOKE_SCRIPTS_DIR)/github-connect-sds-smoke.sh
 
 compose-git-demo:
 	docker compose -f examples/compose/git/compose.yaml up --build --abort-on-container-exit --exit-code-from git-app
@@ -211,5 +213,4 @@ demo: kind-up
 	$(MAKE) test-e2e
 
 test:
-	cd control-plane && go test ./...
-	cd proxy-worker && go test ./...
+	go test $(GO_TEST_PACKAGES)
