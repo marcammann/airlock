@@ -2,11 +2,8 @@ apiVersion: airlock.dev/v1alpha1
 kind: AirlockPolicy
 metadata:
   name: local-http
+  namespace: airlock-system
 spec:
-  workload:
-    spiffeId: spiffe://airlock.local/ns/demo/sa/code-agent/component/airlock-proxy-worker
-    namespace: demo
-    serviceAccount: code-agent
   egress:
     - name: local-upstream
       scheme: http

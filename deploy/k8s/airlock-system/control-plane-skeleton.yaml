@@ -34,7 +34,8 @@ spec:
           args:
             - --listen=:8443
             - --health-listen=:8080
-            - --auth-mode=spiffe
+            - --worker-auth=spiffe
+            - --admin-auth=spiffe
             - --spiffe-socket=unix:///run/spire/agent-sockets/spire-agent.sock
             - --spiffe-trust-domain=airlock.local
             - --kube-source

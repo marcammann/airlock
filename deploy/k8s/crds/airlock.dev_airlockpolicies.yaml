@@ -15,15 +15,6 @@ spec:
     - name: v1alpha1
       served: true
       storage: true
-      subresources:
-        status: {}
-      additionalPrinterColumns:
-        - name: Ready
-          type: string
-          jsonPath: .status.conditions[?(@.type=="Ready")].status
-        - name: PolicyHash
-          type: string
-          jsonPath: .status.policyHash
       schema:
         openAPIV3Schema:
           type: object
@@ -31,25 +22,8 @@ spec:
           properties:
             spec:
               type: object
-              required: ["workload", "egress"]
+              required: ["egress"]
               properties:
-                secretProviderRef:
-                  type: object
-                  properties:
-                    name:
-                      type: string
-                    namespace:
-                      type: string
-                workload:
-                  type: object
-                  required: ["spiffeId"]
-                  properties:
-                    spiffeId:
-                      type: string
-                    namespace:
-                      type: string
-                    serviceAccount:
-                      type: string
                 egress:
                   type: array
                   items:
@@ -102,35 +76,3 @@ spec:
                                   type: string
                                 file:
                                   type: string
-            status:
-              type: object
-              properties:
-                observedGeneration:
-                  type: integer
-                  format: int64
-                policyHash:
-                  type: string
-                spire:
-                  type: object
-                  properties:
-                    ready:
-                      type: boolean
-                vault:
-                  type: object
-                  properties:
-                    ready:
-                      type: boolean
-                conditions:
-                  type: array
-                  items:
-                    type: object
-                    required: ["type", "status"]
-                    properties:
-                      type:
-                        type: string
-                      status:
-                        type: string
-                      reason:
-                        type: string
-                      message:
-                        type: string

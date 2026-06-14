@@ -1,0 +1,44 @@
+services:
+  airlock-proxy:
+    build:
+      context: ../../..
+      dockerfile: proxy-worker/Dockerfile
+    command:
+      - --proxy
+      - http:builtin@0.0.0.0:18080
+      - --no-control-plane
+      - --policy
+      - /airlock/policies/openai-api.yaml
+    volumes:
+      - ./policy/openai-api.yaml:/airlock/policies/openai-api.yaml:ro
+
+  codex-app-server:
+    build:
+      context: ../../..
+      dockerfile: examples/compose/codex-app-server/Dockerfile.server
+    depends_on:
+      - airlock-proxy
+    working_dir: /workspace
+    command:
+      - app-server
+      - --listen
+      - ws://0.0.0.0:4100
+      - --ws-auth
+      - capability-token
+      - --ws-token-file
+      - /run/codex/ws-token
+      - --remote-control
+    ports:
+      - "127.0.0.1:${CODEX_APP_SERVER_PORT:-4100}:4100"
+    environment:
+      CODEX_HOME: /codex-home
+      HTTP_PROXY: http://airlock-proxy:18080
+      HTTPS_PROXY: http://airlock-proxy:18080
+      http_proxy: http://airlock-proxy:18080
+      https_proxy: http://airlock-proxy:18080
+      NO_PROXY: localhost,127.0.0.1,::1
+      no_proxy: localhost,127.0.0.1,::1
+    volumes:
+      - ../../..:/workspace
+      - ./home:/codex-home
+      - ./secrets/ws-token:/run/codex/ws-token:ro

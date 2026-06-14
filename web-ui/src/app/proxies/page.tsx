@@ -1,18 +1,19 @@
 import Link from "next/link";
-import { listProxies } from "@/lib/airlock";
+import { listProxies, proxyKey } from "@/lib/airlock";
+import { requirePagePermission } from "@/lib/auth";
 import type { ReactNode } from "react";
+import { ProxyRefresh } from "./proxy-refresh";
 
 export default async function ProxiesPage() {
+  await requirePagePermission("admin:read");
+
   const result = await listProxies();
 
   if (!result.ok) {
     return (
-      <main className="min-h-screen px-6 py-8 text-slate-950 sm:px-8">
+      <main className="px-6 pb-12 pt-9 text-slate-950 sm:px-8 lg:px-[72px]">
         <section className="mx-auto max-w-6xl">
-          <Link href="/" className="text-sm font-medium text-teal-700 hover:underline">
-            Policies
-          </Link>
-          <div className="mt-6 border border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-950">
+          <div className="border border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-950">
             {result.error}
           </div>
         </section>
@@ -22,27 +23,23 @@ export default async function ProxiesPage() {
 
   const proxies = result.data.proxies;
   const active = proxies.filter((proxy) => proxy.status === "active").length;
+  const allowed = proxies.reduce(
+    (total, proxy) => total + (proxy.decisions?.allowed ?? 0),
+    0,
+  );
 
   return (
-    <main className="min-h-screen px-6 py-8 text-slate-950 sm:px-8">
+    <main className="px-6 pb-12 pt-9 text-slate-950 sm:px-8 lg:px-[72px]">
+      <ProxyRefresh intervalMs={2000} />
       <section className="mx-auto flex max-w-7xl flex-col gap-6">
         <header className="flex flex-col gap-5 border-b border-slate-200 pb-6 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <Link
-              href="/"
-              className="text-sm font-medium text-teal-700 hover:underline"
-            >
-              Policies
-            </Link>
-            <p className="mt-5 text-sm font-semibold uppercase tracking-wide text-teal-700">
-              Airlock Console
-            </p>
-            <h1 className="mt-2 text-3xl font-semibold">Proxies</h1>
+            <h1 className="text-3xl font-semibold">Proxies</h1>
           </div>
           <div className="grid grid-cols-3 gap-3 text-sm">
             <Metric label="Active" value={active} />
             <Metric label="Known" value={proxies.length} />
-            <Metric label="Source" value={result.data.source} compact />
+            <Metric label="Allowed" value={allowed} />
           </div>
         </header>
 
@@ -72,9 +69,11 @@ export default async function ProxiesPage() {
                   <tr>
                     <TableHeader>Proxy</TableHeader>
                     <TableHeader>Workload</TableHeader>
-                    <TableHeader>Policy</TableHeader>
+                    <TableHeader>Workload policy</TableHeader>
                     <TableHeader>Mode</TableHeader>
-                    <TableHeader>Last policy fetch</TableHeader>
+                    <TableHeader>Instances</TableHeader>
+                    <TableHeader>Decisions</TableHeader>
+                    <TableHeader>Last decision</TableHeader>
                     <TableHeader>Last heartbeat</TableHeader>
                     <TableHeader>Status</TableHeader>
                   </tr>
@@ -83,31 +82,35 @@ export default async function ProxiesPage() {
                   {proxies.map((proxy) => (
                     <tr key={proxy.id}>
                       <td className="border-t border-slate-100 px-4 py-4 align-top">
-                        <div className="font-medium text-slate-950">
+                        <Link
+                          href={`/proxies/${proxyKey(proxy)}`}
+                          className="font-medium text-slate-950 underline-offset-4 hover:underline"
+                        >
                           {proxy.id}
-                        </div>
-                        <div className="mt-1 text-xs text-slate-500">
-                          {[proxy.podNamespace, proxy.podName]
-                            .filter(Boolean)
-                            .join("/") || "-"}
-                        </div>
+                        </Link>
                       </td>
                       <td className="border-t border-slate-100 px-4 py-4 align-top font-mono text-xs text-slate-800">
                         {proxy.workloadIdentity || "-"}
                       </td>
                       <td className="border-t border-slate-100 px-4 py-4 align-top">
                         <div className="font-medium text-slate-900">
-                          {proxy.policyName || "-"}
+                          {proxy.workloadName || "-"}
                         </div>
                         <div className="mt-1 text-xs text-slate-500">
-                          {proxy.policyVersion || "-"}
+                          {proxy.effectivePolicyVersion || "-"}
                         </div>
                       </td>
                       <td className="border-t border-slate-100 px-4 py-4 align-top">
                         {proxy.proxyType || "-"}
                       </td>
                       <td className="border-t border-slate-100 px-4 py-4 align-top">
-                        {formatDate(proxy.lastPolicyFetchAt)}
+                        {proxy.activeInstances}/{proxy.instanceCount}
+                      </td>
+                      <td className="border-t border-slate-100 px-4 py-4 align-top">
+                        <DecisionCounts proxy={proxy} />
+                      </td>
+                      <td className="border-t border-slate-100 px-4 py-4 align-top">
+                        {formatDate(proxy.lastDecisionAt)}
                       </td>
                       <td className="border-t border-slate-100 px-4 py-4 align-top">
                         {formatDate(proxy.lastHeartbeatAt)}
@@ -126,6 +129,47 @@ export default async function ProxiesPage() {
         </section>
       </section>
     </main>
+  );
+}
+
+function DecisionCounts({
+  proxy,
+}: {
+  proxy: {
+    decisions?: {
+      allowed: number;
+      denied: number;
+      proxyError: number;
+    };
+  };
+}) {
+  const decisions = proxy.decisions ?? {
+    allowed: 0,
+    denied: 0,
+    proxyError: 0,
+  };
+
+  return (
+    <div className="grid gap-1 text-xs text-slate-600">
+      <div>
+        <span className="font-medium text-emerald-700 tabular-nums">
+          {decisions.allowed}
+        </span>{" "}
+        allowed
+      </div>
+      <div>
+        <span className="font-medium text-rose-700 tabular-nums">
+          {decisions.denied}
+        </span>{" "}
+        denied
+      </div>
+      <div>
+        <span className="font-medium text-amber-700 tabular-nums">
+          {decisions.proxyError}
+        </span>{" "}
+        proxy error
+      </div>
+    </div>
   );
 }
 

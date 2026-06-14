@@ -2,11 +2,8 @@ apiVersion: airlock.dev/v1alpha1
 kind: AirlockPolicy
 metadata:
   name: local-envoy-test
+  namespace: airlock-system
 spec:
-  workload:
-    spiffeId: spiffe://airlock.local/ns/demo/sa/code-agent/component/airlock-proxy-worker
-    namespace: demo
-    serviceAccount: code-agent
   egress:
     - name: local-envoy-upstream
       scheme: http
@@ -20,4 +17,3 @@ spec:
             provider: env
             name: local-token
             env: AIRLOCK_TEST_TOKEN
-

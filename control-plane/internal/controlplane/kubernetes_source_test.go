@@ -18,6 +18,8 @@ func TestLoadPolicyStoreFromKubernetes(t *testing.T) {
 			writeTestJSON(t, w, map[string]any{"items": []any{defaultVaultProviderConfig()}})
 		case "/apis/airlock.dev/v1alpha1/namespaces/airlock-system/airlockpolicies":
 			writeTestJSON(t, w, map[string]any{"items": []any{codeAgentPolicy()}})
+		case "/apis/airlock.dev/v1alpha1/namespaces/airlock-system/airlockworkloads":
+			writeTestJSON(t, w, map[string]any{"items": []any{codeAgentWorkload()}})
 		default:
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}
@@ -45,18 +47,21 @@ func TestLoadPolicyStoreFromKubernetes(t *testing.T) {
 	if got, want := compiled.Egress[0].Rewrites[0].ValueFrom.Mount, "secret"; got != want {
 		t.Fatalf("mount = %q, want %q", got, want)
 	}
+	if got, want := compiled.Egress[0].Rewrites[0].ValueFrom.Path, "prod/airlock/openai/code-agent"; got != want {
+		t.Fatalf("path = %q, want %q", got, want)
+	}
 	if len(updates) != 1 || updates[0].Status.PolicyHash == "" {
 		t.Fatalf("updates = %+v, want one status update with policy hash", updates)
 	}
 }
 
-func TestPatchAirlockPolicyStatus(t *testing.T) {
+func TestPatchAirlockWorkloadStatus(t *testing.T) {
 	var patched map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got, want := r.Method, http.MethodPatch; got != want {
 			t.Fatalf("method = %q, want %q", got, want)
 		}
-		if got, want := r.URL.Path, "/apis/airlock.dev/v1alpha1/namespaces/airlock-system/airlockpolicies/code-agent/status"; got != want {
+		if got, want := r.URL.Path, "/apis/airlock.dev/v1alpha1/namespaces/airlock-system/airlockworkloads/code-agent/status"; got != want {
 			t.Fatalf("path = %q, want %q", got, want)
 		}
 		if got := r.Header.Get("Content-Type"); !strings.Contains(got, "application/merge-patch+json") {
@@ -69,12 +74,16 @@ func TestPatchAirlockPolicyStatus(t *testing.T) {
 	}))
 	defer server.Close()
 
-	input := mustAirlockPolicy(t, codeAgentPolicy())
-	err := PatchAirlockPolicyStatus(context.Background(), KubernetesPolicySourceOptions{
+	input := mustAirlockWorkload(t, codeAgentWorkload())
+	err := PatchAirlockWorkloadStatus(context.Background(), KubernetesPolicySourceOptions{
 		Namespace:    "airlock-system",
 		APIServerURL: server.URL,
 		HTTPClient:   server.Client(),
-	}, input, readyPolicyStatus(input, mustCompiledPolicy(t, input), true))
+	}, input, policy.Status{
+		ObservedGeneration: input.Metadata.Generation,
+		PolicyHash:         "abc123",
+		Conditions:         []policy.StatusCondition{{Type: "Ready", Status: "True"}},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,8 +114,9 @@ func defaultVaultProviderConfig() map[string]any {
 					"audience": "vault",
 				},
 				"defaults": map[string]any{
-					"engine": "kv-v2",
-					"mount":  "secret",
+					"engine":     "kv-v2",
+					"mount":      "secret",
+					"pathPrefix": "prod",
 				},
 			},
 		},
@@ -123,15 +133,6 @@ func codeAgentPolicy() map[string]any {
 			"generation": float64(4),
 		},
 		"spec": map[string]any{
-			"secretProviderRef": map[string]any{
-				"name":      "default-vault",
-				"namespace": "airlock-system",
-			},
-			"workload": map[string]any{
-				"spiffeId":       codeAgentIdentity,
-				"namespace":      "demo",
-				"serviceAccount": "code-agent",
-			},
 			"egress": []any{map[string]any{
 				"name":   "echo-upstream",
 				"scheme": "http",
@@ -153,34 +154,40 @@ func codeAgentPolicy() map[string]any {
 	}
 }
 
-func mustAirlockPolicy(t *testing.T, input map[string]any) policy.AirlockPolicy {
+func codeAgentWorkload() map[string]any {
+	return map[string]any{
+		"apiVersion": "airlock.dev/v1alpha1",
+		"kind":       "AirlockWorkload",
+		"metadata": map[string]any{
+			"name":       "code-agent",
+			"namespace":  "airlock-system",
+			"generation": float64(4),
+		},
+		"spec": map[string]any{
+			"secretProviderRef": map[string]any{
+				"name": "default-vault",
+			},
+			"workload": map[string]any{
+				"spiffeId":       codeAgentIdentity,
+				"namespace":      "demo",
+				"serviceAccount": "code-agent",
+			},
+			"policyRefs": []any{map[string]any{"name": "code-agent"}},
+		},
+	}
+}
+
+func mustAirlockWorkload(t *testing.T, input map[string]any) policy.AirlockWorkload {
 	t.Helper()
 	data, err := json.Marshal(input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var p policy.AirlockPolicy
+	var p policy.AirlockWorkload
 	if err := json.Unmarshal(data, &p); err != nil {
 		t.Fatal(err)
 	}
 	return p
-}
-
-func mustCompiledPolicy(t *testing.T, input policy.AirlockPolicy) policy.CompiledPolicy {
-	t.Helper()
-	providerData, err := json.Marshal(defaultVaultProviderConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var provider policy.SecretProviderConfig
-	if err := json.Unmarshal(providerData, &provider); err != nil {
-		t.Fatal(err)
-	}
-	compiled, err := policy.CompileWithSecretProvider(input, &provider)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return compiled
 }
 
 func writeTestJSON(t *testing.T, w http.ResponseWriter, value any) {

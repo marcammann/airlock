@@ -1,0 +1,7 @@
+apiVersion: airlock.dev/v1alpha1
+kind: AirlockPolicy
+metadata:
+  name: deny-all
+  namespace: airlock-system
+spec:
+  egress: []

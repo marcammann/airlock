@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1
+
+FROM --platform=$BUILDPLATFORM golang:1.25 AS build
+
+ARG TARGETOS=linux
+ARG TARGETARCH
+
+WORKDIR /src
+COPY examples/compose/git/oidc-demo.go ./
+RUN CGO_ENABLED=0 GOOS="${TARGETOS:-linux}" GOARCH="${TARGETARCH:-$(go env GOARCH)}" go build -trimpath -ldflags="-s -w" -o /out/airlock-compose-oidc ./oidc-demo.go
+
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates wget
+COPY --from=build /out/airlock-compose-oidc /usr/local/bin/airlock-compose-oidc
+
+ENTRYPOINT ["/usr/local/bin/airlock-compose-oidc"]

@@ -7,41 +7,24 @@ import (
 
 const APIVersion = "airlock.dev/v1alpha1"
 
-type AirlockPolicy struct {
-	APIVersion string   `json:"apiVersion" yaml:"apiVersion"`
-	Kind       string   `json:"kind" yaml:"kind"`
-	Metadata   Metadata `json:"metadata" yaml:"metadata"`
-	Spec       Spec     `json:"spec" yaml:"spec"`
-}
-
-type Metadata struct {
-	Name      string `json:"name" yaml:"name"`
-	Namespace string `json:"namespace,omitempty" yaml:"namespace"`
-}
-
-type Spec struct {
-	SecretProviderRef SecretProviderRef `json:"secretProviderRef,omitempty" yaml:"secretProviderRef"`
-	Workload          WorkloadIdentity  `json:"workload" yaml:"workload"`
-	Egress            []EgressRule      `json:"egress" yaml:"egress"`
-}
-
-type SecretProviderRef struct {
-	Name      string `json:"name,omitempty" yaml:"name"`
-	Namespace string `json:"namespace,omitempty" yaml:"namespace"`
-}
-
 type WorkloadIdentity struct {
 	SPIFFEID       string `json:"spiffeId,omitempty" yaml:"spiffeId"`
 	Namespace      string `json:"namespace,omitempty" yaml:"namespace"`
 	ServiceAccount string `json:"serviceAccount,omitempty" yaml:"serviceAccount"`
 }
 
+type PolicyRef struct {
+	Name      string `json:"name" yaml:"name"`
+	Namespace string `json:"namespace,omitempty" yaml:"namespace,omitempty"`
+}
+
 type EgressRule struct {
-	Name     string        `json:"name" yaml:"name"`
-	Scheme   string        `json:"scheme,omitempty" yaml:"scheme"`
-	Host     string        `json:"host" yaml:"host"`
-	Port     uint32        `json:"port,omitempty" yaml:"port"`
-	Rewrites []RewriteRule `json:"rewrites,omitempty" yaml:"rewrites"`
+	Name         string        `json:"name" yaml:"name"`
+	Scheme       string        `json:"scheme,omitempty" yaml:"scheme"`
+	Host         string        `json:"host" yaml:"host"`
+	Port         uint32        `json:"port,omitempty" yaml:"port"`
+	Rewrites     []RewriteRule `json:"rewrites,omitempty" yaml:"rewrites"`
+	SourcePolicy *PolicyRef    `json:"sourcePolicy,omitempty" yaml:"sourcePolicy,omitempty"`
 }
 
 type RewriteRule struct {
@@ -63,23 +46,23 @@ type SecretRef struct {
 }
 
 type CompiledPolicy struct {
-	Version        string                  `json:"version"`
-	PolicyName     string                  `json:"policyName"`
-	Workload       WorkloadIdentity        `json:"workload"`
-	SecretProvider *CompiledSecretProvider `json:"secretProvider,omitempty"`
-	Egress         []EgressRule            `json:"egress"`
+	Version        string                  `json:"version" yaml:"version"`
+	PolicyName     string                  `json:"policyName" yaml:"policyName"`
+	Workload       WorkloadIdentity        `json:"workload" yaml:"workload"`
+	SecretProvider *CompiledSecretProvider `json:"secretProvider,omitempty" yaml:"secretProvider,omitempty"`
+	Egress         []EgressRule            `json:"egress" yaml:"egress"`
 }
 
 type CompiledSecretProvider struct {
-	Provider string                 `json:"provider"`
-	Vault    *CompiledVaultProvider `json:"vault,omitempty"`
+	Provider string                 `json:"provider" yaml:"provider"`
+	Vault    *CompiledVaultProvider `json:"vault,omitempty" yaml:"vault,omitempty"`
 }
 
 type CompiledVaultProvider struct {
-	Address   string `json:"address"`
-	AuthMount string `json:"authMount"`
-	Audience  string `json:"audience"`
-	Role      string `json:"role"`
+	Address   string `json:"address" yaml:"address"`
+	AuthMount string `json:"authMount" yaml:"authMount"`
+	Audience  string `json:"audience" yaml:"audience"`
+	Role      string `json:"role" yaml:"role"`
 }
 
 type ValidationError struct {
@@ -90,34 +73,19 @@ func (e ValidationError) Error() string {
 	return strings.Join(e.Problems, "; ")
 }
 
-func Compile(policy AirlockPolicy) (CompiledPolicy, error) {
-	if err := Validate(policy); err != nil {
-		return CompiledPolicy{}, err
-	}
-	return CompiledPolicy{
-		Version:    policy.APIVersion,
-		PolicyName: policy.Metadata.Name,
-		Workload:   policy.Spec.Workload,
-		Egress:     policy.Spec.Egress,
-	}, nil
-}
-
-func Validate(policy AirlockPolicy) error {
+func ValidateCompiledPolicy(policy CompiledPolicy) error {
 	var problems []string
-	if policy.APIVersion != APIVersion {
+	if policy.Version != APIVersion {
 		problems = append(problems, fmt.Sprintf("apiVersion must be %q", APIVersion))
 	}
-	if policy.Kind != "AirlockPolicy" {
-		problems = append(problems, "kind must be AirlockPolicy")
+	if strings.TrimSpace(policy.PolicyName) == "" {
+		problems = append(problems, "policyName is required")
 	}
-	if strings.TrimSpace(policy.Metadata.Name) == "" {
-		problems = append(problems, "metadata.name is required")
+	if strings.TrimSpace(policy.Workload.SPIFFEID) == "" {
+		problems = append(problems, "workload.spiffeId is required")
 	}
-	if strings.TrimSpace(policy.Spec.Workload.SPIFFEID) == "" {
-		problems = append(problems, "spec.workload.spiffeId is required")
-	}
-	for i, rule := range policy.Spec.Egress {
-		prefix := fmt.Sprintf("spec.egress[%d]", i)
+	for i, rule := range policy.Egress {
+		prefix := fmt.Sprintf("egress[%d]", i)
 		if strings.TrimSpace(rule.Name) == "" {
 			problems = append(problems, prefix+".name is required")
 		}

@@ -12,6 +12,7 @@ import (
 func TestReconcileSPIRECreatesClusterSPIFFEID(t *testing.T) {
 	store, err := LoadPolicyStoreWithSecretProviderConfigs(
 		[]string{filepath.Join("..", "..", "..", "fixtures", "policies", "valid-vault-provider-ref.yaml")},
+		[]string{filepath.Join("..", "..", "..", "fixtures", "workloads", "code-agent-vault.yaml")},
 		[]string{filepath.Join("..", "..", "..", "fixtures", "secret-provider-configs", "default-vault.yaml")},
 	)
 	if err != nil {
@@ -52,6 +53,12 @@ func TestReconcileSPIRECreatesClusterSPIFFEID(t *testing.T) {
 	if got, want := created.Metadata.Name, "airlock-code-agent"; got != want {
 		t.Fatalf("name = %q, want %q", got, want)
 	}
+	if got, want := created.Metadata.Labels["airlock.dev/workload-name"], "code-agent"; got != want {
+		t.Fatalf("workload label = %q, want %q", got, want)
+	}
+	if _, ok := created.Metadata.Labels["airlock.dev/policy-name"]; ok {
+		t.Fatalf("created ClusterSPIFFEID kept stale policy-name label: %#v", created.Metadata.Labels)
+	}
 	if got, want := created.Spec.SPIFFEIDTemplate, codeAgentIdentity; got != want {
 		t.Fatalf("spiffeIDTemplate = %q, want %q", got, want)
 	}
@@ -66,6 +73,7 @@ func TestReconcileSPIRECreatesClusterSPIFFEID(t *testing.T) {
 func TestReconcileSPIREReplacesExistingClusterSPIFFEIDSpec(t *testing.T) {
 	store, err := LoadPolicyStoreWithSecretProviderConfigs(
 		[]string{filepath.Join("..", "..", "..", "fixtures", "policies", "valid-vault-provider-ref.yaml")},
+		[]string{filepath.Join("..", "..", "..", "fixtures", "workloads", "code-agent-vault.yaml")},
 		[]string{filepath.Join("..", "..", "..", "fixtures", "secret-provider-configs", "default-vault.yaml")},
 	)
 	if err != nil {
@@ -128,6 +136,7 @@ func TestReconcileSPIREReplacesExistingClusterSPIFFEIDSpec(t *testing.T) {
 func TestReconcileSPIREGarbageCollectsStaleManagedClusterSPIFFEIDs(t *testing.T) {
 	store, err := LoadPolicyStoreWithSecretProviderConfigs(
 		[]string{filepath.Join("..", "..", "..", "fixtures", "policies", "valid-vault-provider-ref.yaml")},
+		[]string{filepath.Join("..", "..", "..", "fixtures", "workloads", "code-agent-vault.yaml")},
 		[]string{filepath.Join("..", "..", "..", "fixtures", "secret-provider-configs", "default-vault.yaml")},
 	)
 	if err != nil {

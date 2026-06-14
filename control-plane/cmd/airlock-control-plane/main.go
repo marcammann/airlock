@@ -37,11 +37,30 @@ func main() {
 
 func run() error {
 	var listen string
+	var adminListen string
 	var healthListen string
 	var policyPaths stringList
+	var workloadPaths stringList
 	var secretProviderConfigPaths stringList
-	var authMode string
-	var devToken string
+	var workerAuth string
+	var workerDevToken string
+	var adminAuth string
+	var adminDevToken string
+	var adminOIDCIssuer string
+	var adminOIDCAudience string
+	var adminOIDCJWKSURL string
+	var adminOIDCGroupsClaim string
+	var adminOIDCRolesClaim string
+	var adminRBACBindings stringList
+	var heartbeatStaleThreshold int
+	var eventLog string
+	var eventLogLimit int
+	var eventLogTTL time.Duration
+	var eventIngestRate float64
+	var eventIngestBurst int
+	var eventIngestRatePerProxy float64
+	var eventIngestBurstPerProxy int
+	var insecureDevMode bool
 	var spiffeSocket string
 	var spiffeTrustDomain string
 	var vaultReconcile bool
@@ -66,18 +85,37 @@ func run() error {
 	var injectUpstreamPort int
 
 	flag.StringVar(&listen, "listen", envOrDefault("AIRLOCK_LISTEN", ":8080"), "HTTP listen address")
+	flag.StringVar(&adminListen, "admin-listen", os.Getenv("AIRLOCK_ADMIN_LISTEN"), "optional separate admin API listen address")
 	flag.StringVar(&healthListen, "health-listen", os.Getenv("AIRLOCK_HEALTH_LISTEN"), "optional separate plain HTTP health listen address")
-	flag.Var(&policyPaths, "policy", "path to an AirlockPolicy YAML file; may be repeated")
+	flag.Var(&policyPaths, "policy", "path to a reusable AirlockPolicy YAML file; may be repeated")
+	flag.Var(&workloadPaths, "workload", "path to an AirlockWorkload YAML file; may be repeated")
 	flag.Var(&secretProviderConfigPaths, "secret-provider-config", "path to a SecretProviderConfig YAML file; may be repeated")
-	flag.StringVar(&authMode, "auth-mode", envOrDefault("AIRLOCK_AUTH_MODE", "none"), "policy API auth mode: none, dev-token, or spiffe")
-	flag.StringVar(&devToken, "dev-token", os.Getenv("AIRLOCK_DEV_TOKEN"), "optional development bearer token")
+	flag.StringVar(&workerAuth, "worker-auth", envOrDefault("AIRLOCK_WORKER_AUTH", "spiffe"), "worker API auth mode: none, dev-token, or spiffe")
+	flag.StringVar(&adminAuth, "admin-auth", envOrDefault("AIRLOCK_ADMIN_AUTH", "spiffe"), "admin API auth mode: none, dev-token, spiffe, or oidc")
+	flag.StringVar(&workerDevToken, "worker-dev-token", os.Getenv("AIRLOCK_WORKER_DEV_TOKEN"), "worker API development bearer token")
+	flag.StringVar(&adminDevToken, "admin-dev-token", os.Getenv("AIRLOCK_ADMIN_DEV_TOKEN"), "admin API development bearer token")
+	flag.StringVar(&adminOIDCIssuer, "admin-oidc-issuer", os.Getenv("AIRLOCK_ADMIN_OIDC_ISSUER"), "OIDC issuer for admin API bearer tokens")
+	flag.StringVar(&adminOIDCAudience, "admin-oidc-audience", os.Getenv("AIRLOCK_ADMIN_OIDC_AUDIENCE"), "OIDC audience for admin API bearer tokens")
+	flag.StringVar(&adminOIDCJWKSURL, "admin-oidc-jwks-url", os.Getenv("AIRLOCK_ADMIN_OIDC_JWKS_URL"), "optional explicit OIDC JWKS URL for admin API bearer tokens")
+	flag.StringVar(&adminOIDCGroupsClaim, "admin-oidc-groups-claim", envOrDefault("AIRLOCK_ADMIN_OIDC_GROUPS_CLAIM", "groups"), "OIDC claim containing admin groups")
+	flag.StringVar(&adminOIDCRolesClaim, "admin-oidc-roles-claim", envOrDefault("AIRLOCK_ADMIN_OIDC_ROLES_CLAIM", "roles"), "OIDC claim containing direct Airlock roles")
+	flag.Var(&adminRBACBindings, "admin-rbac-binding", "admin RBAC binding in subject=role[,role] form; subject can be a group, user:<email>, or sub:<subject>")
+	flag.IntVar(&heartbeatStaleThreshold, "heartbeat-stale-threshold", envIntOrDefault("AIRLOCK_HEARTBEAT_STALE_THRESHOLD", 9), "number of missed proxy heartbeat intervals before marking a proxy stale")
+	flag.StringVar(&eventLog, "event-log", envOrDefault("AIRLOCK_EVENT_LOG", "memory"), "control-plane event log backend: memory or disabled")
+	flag.IntVar(&eventLogLimit, "event-log-limit", envIntOrDefault("AIRLOCK_EVENT_LOG_LIMIT", 1000), "maximum in-memory Airlock events to retain")
+	flag.DurationVar(&eventLogTTL, "event-log-ttl", envDurationOrDefault("AIRLOCK_EVENT_LOG_TTL", 24*time.Hour), "maximum age for in-memory Airlock events")
+	flag.Float64Var(&eventIngestRate, "event-ingest-rate", envFloatOrDefault("AIRLOCK_EVENT_INGEST_RATE", 100), "maximum Airlock events accepted per second across all proxies")
+	flag.IntVar(&eventIngestBurst, "event-ingest-burst", envIntOrDefault("AIRLOCK_EVENT_INGEST_BURST", 500), "global burst of Airlock events accepted across all proxies")
+	flag.Float64Var(&eventIngestRatePerProxy, "event-ingest-rate-per-proxy", envFloatOrDefault("AIRLOCK_EVENT_INGEST_RATE_PER_PROXY", 2), "maximum Airlock events accepted per second from each proxy")
+	flag.IntVar(&eventIngestBurstPerProxy, "event-ingest-burst-per-proxy", envIntOrDefault("AIRLOCK_EVENT_INGEST_BURST_PER_PROXY", 50), "burst of Airlock events accepted from each proxy")
+	flag.BoolVar(&insecureDevMode, "insecure-dev-mode", envBool("AIRLOCK_INSECURE_DEV_MODE"), "allow insecure development auth modes such as none and dev-token")
 	flag.StringVar(&spiffeSocket, "spiffe-socket", envOrDefault("SPIFFE_ENDPOINT_SOCKET", "unix:///run/spire/agent-sockets/spire-agent.sock"), "SPIFFE Workload API socket URI")
 	flag.StringVar(&spiffeTrustDomain, "spiffe-trust-domain", envOrDefault("AIRLOCK_SPIFFE_TRUST_DOMAIN", "airlock.local"), "SPIFFE trust domain accepted for client SVIDs")
 	flag.BoolVar(&vaultReconcile, "vault-reconcile", envBool("AIRLOCK_VAULT_RECONCILE"), "reconcile generated Vault policies and JWT roles at startup")
 	flag.StringVar(&vaultAdminToken, "vault-admin-token", os.Getenv("AIRLOCK_VAULT_ADMIN_TOKEN"), "Vault admin token used only for policy/role reconciliation")
 	flag.StringVar(&vaultAdminTokenFile, "vault-admin-token-file", os.Getenv("AIRLOCK_VAULT_ADMIN_TOKEN_FILE"), "file containing Vault admin token used only for policy/role reconciliation")
-	flag.BoolVar(&kubeSource, "kube-source", envBool("AIRLOCK_KUBE_SOURCE"), "load AirlockPolicy and SecretProviderConfig objects from the Kubernetes API")
-	flag.StringVar(&kubeNamespace, "kube-namespace", envOrDefault("AIRLOCK_KUBE_NAMESPACE", envOrDefault("POD_NAMESPACE", "airlock-system")), "namespace containing AirlockPolicy and SecretProviderConfig objects")
+	flag.BoolVar(&kubeSource, "kube-source", envBool("AIRLOCK_KUBE_SOURCE"), "load AirlockPolicy, AirlockWorkload, and SecretProviderConfig objects from the Kubernetes API")
+	flag.StringVar(&kubeNamespace, "kube-namespace", envOrDefault("AIRLOCK_KUBE_NAMESPACE", envOrDefault("POD_NAMESPACE", "airlock-system")), "namespace containing AirlockPolicy, AirlockWorkload, and SecretProviderConfig objects")
 	flag.DurationVar(&kubeReconcileInterval, "kube-reconcile-interval", envDurationOrDefault("AIRLOCK_KUBE_RECONCILE_INTERVAL", 10*time.Second), "interval for refreshing Kubernetes-backed policy config")
 	flag.BoolVar(&spireReconcile, "spire-reconcile", envBool("AIRLOCK_SPIRE_RECONCILE"), "reconcile SPIRE ClusterSPIFFEID objects from policy workload identity")
 	flag.BoolVar(&spireGarbageCollect, "spire-garbage-collect", envBoolOrDefault("AIRLOCK_SPIRE_GARBAGE_COLLECT", true), "delete stale Airlock-managed SPIRE ClusterSPIFFEID objects during reconciliation")
@@ -102,6 +140,13 @@ func run() error {
 			}
 		}
 	}
+	if envPaths := strings.TrimSpace(os.Getenv("AIRLOCK_WORKLOAD_PATHS")); envPaths != "" {
+		for _, path := range strings.Split(envPaths, ",") {
+			if path = strings.TrimSpace(path); path != "" {
+				workloadPaths = append(workloadPaths, path)
+			}
+		}
+	}
 	if envPaths := strings.TrimSpace(os.Getenv("AIRLOCK_SECRET_PROVIDER_CONFIG_PATHS")); envPaths != "" {
 		for _, path := range strings.Split(envPaths, ",") {
 			if path = strings.TrimSpace(path); path != "" {
@@ -109,9 +154,19 @@ func run() error {
 			}
 		}
 	}
+	if envBindings := strings.TrimSpace(os.Getenv("AIRLOCK_ADMIN_RBAC_BINDINGS")); envBindings != "" {
+		for _, binding := range strings.Split(envBindings, ";") {
+			if binding = strings.TrimSpace(binding); binding != "" {
+				adminRBACBindings = append(adminRBACBindings, binding)
+			}
+		}
+	}
 
 	if !kubeSource && len(policyPaths) == 0 {
 		return fmt.Errorf("at least one --policy or AIRLOCK_POLICY_PATHS entry is required")
+	}
+	if !kubeSource && len(workloadPaths) == 0 {
+		return fmt.Errorf("at least one --workload or AIRLOCK_WORKLOAD_PATHS entry is required")
 	}
 
 	ctx := context.Background()
@@ -130,7 +185,7 @@ func run() error {
 	if kubeSource {
 		store, kubeStatusUpdates, err = controlplane.LoadPolicyStoreFromKubernetes(ctx, kubeOpts)
 	} else {
-		store, err = controlplane.LoadPolicyStoreWithSecretProviderConfigs(policyPaths, secretProviderConfigPaths)
+		store, err = controlplane.LoadPolicyStoreWithSecretProviderConfigs(policyPaths, workloadPaths, secretProviderConfigPaths)
 	}
 	if err != nil {
 		return err
@@ -167,8 +222,82 @@ func run() error {
 		patchKubernetesStatuses(ctx, kubeOpts, kubeStatusUpdates, spireReady, vaultReady)
 	}
 
-	mode := controlplane.AuthMode(authMode)
-	server := controlplane.NewServerWithAuth(store, mode, devToken, os.Stderr)
+	workerMode := controlplane.AuthMode(workerAuth)
+	adminMode := controlplane.AuthMode(adminAuth)
+	if err := validateAuthConfig(workerMode, workerDevToken, "worker", insecureDevMode); err != nil {
+		return err
+	}
+	if adminListen != "" {
+		if err := validateAuthConfig(adminMode, adminDevToken, "admin", insecureDevMode); err != nil {
+			return err
+		}
+	}
+	if insecureDevMode {
+		log.Printf("airlock-control-plane insecure development auth modes are enabled")
+	}
+	if heartbeatStaleThreshold <= 0 {
+		return fmt.Errorf("--heartbeat-stale-threshold must be greater than zero")
+	}
+	eventLogMode := controlplane.EventLogMode(strings.TrimSpace(eventLog))
+	switch eventLogMode {
+	case controlplane.EventLogMemory, controlplane.EventLogDisabled:
+	default:
+		return fmt.Errorf("--event-log must be memory or disabled")
+	}
+	if eventLogLimit <= 0 {
+		return fmt.Errorf("--event-log-limit must be greater than zero")
+	}
+	if eventLogTTL <= 0 {
+		return fmt.Errorf("--event-log-ttl must be greater than zero")
+	}
+	if eventIngestRate <= 0 {
+		return fmt.Errorf("--event-ingest-rate must be greater than zero")
+	}
+	if eventIngestBurst <= 0 {
+		return fmt.Errorf("--event-ingest-burst must be greater than zero")
+	}
+	if eventIngestRatePerProxy <= 0 {
+		return fmt.Errorf("--event-ingest-rate-per-proxy must be greater than zero")
+	}
+	if eventIngestBurstPerProxy <= 0 {
+		return fmt.Errorf("--event-ingest-burst-per-proxy must be greater than zero")
+	}
+	var adminOIDC *controlplane.OIDCAuthenticator
+	if adminListen != "" && adminMode == controlplane.AuthModeOIDC {
+		adminOIDC, err = controlplane.NewOIDCAuthenticator(ctx, controlplane.OIDCConfig{
+			Issuer:      adminOIDCIssuer,
+			Audience:    adminOIDCAudience,
+			JWKSURL:     adminOIDCJWKSURL,
+			GroupsClaim: adminOIDCGroupsClaim,
+			RolesClaim:  adminOIDCRolesClaim,
+		})
+		if err != nil {
+			return err
+		}
+	}
+	roleBindings, err := parseRBACBindings(adminRBACBindings)
+	if err != nil {
+		return err
+	}
+	rbac := controlplane.NewRBACAuthorizer(controlplane.RBACConfig{RoleBindings: roleBindings})
+	server := controlplane.NewServerWithOptions(store, controlplane.ServerOptions{
+		WorkerAuthMode:           workerMode,
+		WorkerDevToken:           workerDevToken,
+		AdminAuthMode:            adminMode,
+		AdminDevToken:            adminDevToken,
+		AdminOIDC:                adminOIDC,
+		AdminRBAC:                rbac,
+		HeartbeatStaleThreshold:  heartbeatStaleThreshold,
+		EventLogMode:             eventLogMode,
+		EventLogLimit:            eventLogLimit,
+		EventLogTTL:              eventLogTTL,
+		EventIngestRate:          eventIngestRate,
+		EventIngestBurst:         eventIngestBurst,
+		EventIngestRatePerProxy:  eventIngestRatePerProxy,
+		EventIngestBurstPerProxy: eventIngestBurstPerProxy,
+		AllowInsecureDevAuth:     insecureDevMode,
+		Audit:                    os.Stderr,
+	})
 	if kubeSource {
 		go runKubernetesReconcileLoop(ctx, server, kubeOpts, spireOpts, spireReconcile, vaultReconcile, vaultToken, kubeReconcileInterval)
 	}
@@ -202,15 +331,23 @@ func run() error {
 			}
 		}()
 	}
+	if adminListen != "" {
+		go func() {
+			log.Printf("airlock-control-plane admin API listening on %s with admin_auth=%s", adminListen, adminMode)
+			if err := http.ListenAndServe(adminListen, server.AdminHandler()); err != nil {
+				log.Printf("admin server stopped: %v", err)
+			}
+		}()
+	}
 
-	switch mode {
+	switch workerMode {
 	case controlplane.AuthModeNone, controlplane.AuthModeDevToken:
-		log.Printf("airlock-control-plane listening on %s with %d policy mapping(s), auth_mode=%s", listen, store.Len(), mode)
-		return http.ListenAndServe(listen, server.Handler())
+		log.Printf("airlock-control-plane listening on %s with %d policy mapping(s), worker_auth=%s admin_auth=%s", listen, store.Len(), workerMode, adminMode)
+		return http.ListenAndServe(listen, server.WorkerHandler())
 	case controlplane.AuthModeSPIFFE:
 		return serveSPIFFE(listen, spiffeSocket, spiffeTrustDomain, server)
 	default:
-		return fmt.Errorf("unsupported auth mode %q", authMode)
+		return fmt.Errorf("unsupported worker auth mode %q", workerAuth)
 	}
 }
 
@@ -219,6 +356,61 @@ func envOrDefault(name string, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func parseRBACBindings(bindings []string) (map[string][]string, error) {
+	out := map[string][]string{}
+	for _, binding := range bindings {
+		binding = strings.TrimSpace(binding)
+		if binding == "" {
+			continue
+		}
+		subject, roles, ok := strings.Cut(binding, "=")
+		if !ok {
+			return nil, fmt.Errorf("admin RBAC binding %q must use subject=role[,role]", binding)
+		}
+		subject = strings.TrimSpace(subject)
+		if subject == "" {
+			return nil, fmt.Errorf("admin RBAC binding %q has empty subject", binding)
+		}
+		for _, role := range strings.Split(roles, ",") {
+			role = strings.TrimSpace(role)
+			if role != "" {
+				out[subject] = append(out[subject], role)
+			}
+		}
+		if len(out[subject]) == 0 {
+			return nil, fmt.Errorf("admin RBAC binding %q has no roles", binding)
+		}
+	}
+	return out, nil
+}
+
+func validateAuthConfig(mode controlplane.AuthMode, token string, name string, insecureDevMode bool) error {
+	switch mode {
+	case controlplane.AuthModeNone:
+		if !insecureDevMode {
+			return fmt.Errorf("%s auth mode none requires --insecure-dev-mode", name)
+		}
+		return nil
+	case controlplane.AuthModeSPIFFE:
+		return nil
+	case controlplane.AuthModeDevToken:
+		if !insecureDevMode {
+			return fmt.Errorf("%s auth mode dev-token requires --insecure-dev-mode", name)
+		}
+		if strings.TrimSpace(token) == "" {
+			return fmt.Errorf("%s auth mode dev-token requires a non-empty token", name)
+		}
+		return nil
+	case controlplane.AuthModeOIDC:
+		if name == "worker" {
+			return fmt.Errorf("worker auth mode oidc is not supported")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported %s auth mode %q", name, mode)
+	}
 }
 
 func envBool(name string) bool {
@@ -264,6 +456,18 @@ func envIntOrDefault(name string, fallback int) int {
 	}
 	var parsed int
 	if _, err := fmt.Sscanf(value, "%d", &parsed); err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func envFloatOrDefault(name string, fallback float64) float64 {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	var parsed float64
+	if _, err := fmt.Sscanf(value, "%f", &parsed); err != nil {
 		return fallback
 	}
 	return parsed
@@ -359,8 +563,8 @@ func patchKubernetesStatuses(ctx context.Context, opts controlplane.KubernetesPo
 			status.Conditions[0].Status = "False"
 			status.Conditions[0].Reason = "Reconciling"
 		}
-		if err := controlplane.PatchAirlockPolicyStatus(ctx, opts, update.Policy, status); err != nil {
-			log.Printf("patch AirlockPolicy status %s/%s: %v", update.Policy.Metadata.Namespace, update.Policy.Metadata.Name, err)
+		if err := controlplane.PatchAirlockWorkloadStatus(ctx, opts, update.Workload, status); err != nil {
+			log.Printf("patch AirlockWorkload status %s/%s: %v", update.Workload.Metadata.Namespace, update.Workload.Metadata.Name, err)
 		}
 	}
 }
@@ -380,7 +584,7 @@ func serveSPIFFE(listen string, socket string, trustDomain string, server *contr
 
 	httpServer := &http.Server{
 		Addr:      listen,
-		Handler:   server.Handler(),
+		Handler:   server.WorkerHandler(),
 		TLSConfig: tlsconfig.MTLSServerConfig(source, source, tlsconfig.AuthorizeMemberOf(td)),
 	}
 

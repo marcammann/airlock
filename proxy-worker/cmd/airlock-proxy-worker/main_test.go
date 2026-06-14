@@ -54,12 +54,26 @@ func TestResolveProxyConfigRequiresProxy(t *testing.T) {
 	}
 }
 
+func TestProxyIPIDPrefersPodIP(t *testing.T) {
+	t.Setenv("POD_IP", "10.42.0.17")
+
+	got, err := proxyIPID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "10.42.0.17" {
+		t.Fatalf("proxyIPID() = %q, want POD_IP", got)
+	}
+}
+
 func TestRunControlPlaneOutageFailsBeforeStartup(t *testing.T) {
 	controlPlaneURL := startFailingControlPlane(t)
 	restoreFlags := replaceCommandLine(t, []string{
 		"airlock-proxy-worker",
 		"--proxy", "http:builtin@127.0.0.1:0",
 		"--control-plane-url", controlPlaneURL,
+		"--control-plane-auth", "none",
+		"--insecure-dev-mode",
 		"--workload-identity", "spiffe://airlock.local/ns/demo/sa/code-agent/component/airlock-proxy-worker",
 	})
 	defer restoreFlags()
@@ -70,6 +84,38 @@ func TestRunControlPlaneOutageFailsBeforeStartup(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "HTTP 503") {
 		t.Fatalf("error = %q, want HTTP 503", err)
+	}
+}
+
+func TestValidateControlPlaneAuthRequiresExplicitInsecureDevMode(t *testing.T) {
+	tests := []struct {
+		name            string
+		auth            string
+		devToken        string
+		insecureDevMode bool
+		wantErr         string
+	}{
+		{name: "spiffe", auth: "spiffe"},
+		{name: "none without dev mode", auth: "none", wantErr: "--insecure-dev-mode"},
+		{name: "none with dev mode", auth: "none", insecureDevMode: true},
+		{name: "dev token without dev mode", auth: "dev-token", devToken: "token", wantErr: "--insecure-dev-mode"},
+		{name: "dev token without token", auth: "dev-token", insecureDevMode: true, wantErr: "--dev-token"},
+		{name: "dev token with dev mode", auth: "dev-token", devToken: "token", insecureDevMode: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateControlPlaneAuth(tt.auth, tt.devToken, tt.insecureDevMode)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateControlPlaneAuth() error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("validateControlPlaneAuth() error = %v, want %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 

@@ -1,0 +1,10 @@
+apiVersion: airlock.dev/v1alpha1
+kind: AirlockPolicy
+metadata:
+  name: compose-proxy-observability
+spec:
+  egress:
+    - name: example-http
+      scheme: http
+      host: example.com
+      port: 80

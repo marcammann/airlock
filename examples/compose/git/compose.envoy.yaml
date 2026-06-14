@@ -1,0 +1,101 @@
+services:
+  oidc:
+    build:
+      context: ../../..
+      dockerfile: examples/compose/git/Dockerfile.oidc
+    environment:
+      OIDC_ISSUER: http://oidc:8080
+      OIDC_AUDIENCE: airlock-web
+      OIDC_GROUP: airlock-viewers
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 30
+
+  control-plane:
+    build:
+      context: ../../..
+      dockerfile: control-plane/Dockerfile
+    depends_on:
+      oidc:
+        condition: service_healthy
+    command:
+      - --listen=:8080
+      - --admin-listen=:8081
+      - --policy=/airlock/policies/github.yaml
+      - --workload=/airlock/workloads/github-workload.yaml
+      - --worker-auth=dev-token
+      - --worker-dev-token=${AIRLOCK_DEV_TOKEN:-compose-dev-token}
+      - --insecure-dev-mode
+      - --admin-auth=oidc
+      - --admin-oidc-issuer=http://oidc:8080
+      - --admin-oidc-audience=airlock-web
+      - --admin-rbac-binding=airlock-viewers=viewer
+    ports:
+      - "18083:8080"
+      - "18085:8081"
+    volumes:
+      - ./policy/github.yaml:/airlock/policies/github.yaml:ro
+      - ./policy/github-workload.yaml:/airlock/workloads/github-workload.yaml:ro
+
+  proxy-worker:
+    build:
+      context: ../../..
+      dockerfile: examples/compose/git/Dockerfile.app
+    depends_on:
+      - control-plane
+    environment:
+      AIRLOCK_RUN_ROLE: proxy-envoy
+      AIRLOCK_CONTROL_PLANE_URL: http://control-plane:8080
+      AIRLOCK_DEV_TOKEN: ${AIRLOCK_DEV_TOKEN:-compose-dev-token}
+      AIRLOCK_PROXY_LISTEN: 0.0.0.0:50051
+      AIRLOCK_CA_CERT: /run/airlock/ca/ca.crt
+      AIRLOCK_CA_KEY: /run/airlock/secrets/ca.key
+      AIRLOCK_SECRET_FILE: /run/airlock/secrets/github-basic-auth
+      GITHUB_BASIC_USER: ${GITHUB_BASIC_USER:-x-access-token}
+      GITHUB_PAT: ${GITHUB_PAT:?set GITHUB_PAT to a token with repo access}
+    volumes:
+      - airlock-ca-public:/run/airlock/ca
+      - airlock-private:/run/airlock/secrets
+
+  envoy:
+    image: envoyproxy/envoy:v1.31.0
+    depends_on:
+      - proxy-worker
+    command:
+      - -c
+      - /etc/envoy/envoy.yaml
+      - --log-level
+      - info
+    ports:
+      - "11000:10000"
+      - "19901:9901"
+    volumes:
+      - ./envoy.yaml:/etc/envoy/envoy.yaml:ro
+
+  git-app:
+    build:
+      context: ../../..
+      dockerfile: examples/compose/git/Dockerfile.app
+    depends_on:
+      - envoy
+      - proxy-worker
+    environment:
+      AIRLOCK_RUN_ROLE: git-client
+      AIRLOCK_GIT_PROXY_URL: http://envoy:10000
+      AIRLOCK_ADMIN_URL: http://control-plane:8081
+      AIRLOCK_OIDC_TOKEN_URL: http://oidc:8080/token
+      AIRLOCK_ADMIN_SMOKE: "true"
+      AIRLOCK_CA_CERT: /run/airlock/ca/ca.crt
+      GITHUB_REPO: ${GITHUB_REPO:-marcammann/portfolio}
+      GIT_DEPTH: ${GIT_DEPTH:-1}
+      EXPECT_DIRECT_CLONE_DENIED: ${EXPECT_DIRECT_CLONE_DENIED:-true}
+    volumes:
+      - airlock-ca-public:/run/airlock/ca:ro
+      - git-checkout:/work
+
+volumes:
+  airlock-ca-public:
+  airlock-private:
+  git-checkout:

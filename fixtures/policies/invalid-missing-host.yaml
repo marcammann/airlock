@@ -3,8 +3,6 @@ kind: AirlockPolicy
 metadata:
   name: missing-host
 spec:
-  workload:
-    spiffeId: spiffe://airlock.local/ns/demo/sa/code-agent/component/airlock-proxy-worker
   egress:
     - name: openai-api
       scheme: https
@@ -16,4 +14,3 @@ spec:
             provider: env
             name: test-token
             env: AIRLOCK_TEST_TOKEN
-

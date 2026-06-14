@@ -1,0 +1,13 @@
+version: airlock.dev/v1alpha1
+policyName: opencode-openai-api
+workload:
+  spiffeId: spiffe://airlock.local/compose/opencode/component/airlock-proxy-worker
+  namespace: compose
+  serviceAccount: opencode-server
+egress:
+  - name: openai-api
+    scheme: https
+    host: api.openai.com
+    port: 443
+    sourcePolicy:
+      name: opencode-openai-api

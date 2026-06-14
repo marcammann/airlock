@@ -1,53 +1,140 @@
 # Airlock
 
-Airlock is a proxy-based secret management and egress control system for
-workloads. Secrets are resolved and injected by the proxy-worker at the last
-responsible moment; applications and the control plane never see secret values.
+Airlock is a proxy-based egress control and secret injection system for
+workloads. Applications send outbound traffic through an Airlock proxy worker;
+the worker enforces policy, resolves secrets at the last responsible moment, and
+keeps secret values out of application containers and the control plane.
 
-## Current Status
+Airlock is currently a development-stage project. The active implementation is
+the Go control plane plus the Go proxy worker.
 
-This repository is currently hardening the Kubernetes and proxy data paths
-before packaging the developer workflow.
+## What Is Here
 
-Implemented so far:
+- Kubernetes CRDs for `AirlockPolicy`, `AirlockWorkload`, and
+  `SecretProviderConfig`.
+- Go control plane with file and Kubernetes policy loading.
+- SPIFFE mTLS between proxy workers and the control plane.
+- SPIRE `ClusterSPIFFEID` reconciliation from Airlock workloads.
+- Vault JWT-SVID login and least-privilege Vault policy/role reconciliation.
+- Go proxy worker with builtin HTTP proxying, HTTPS `CONNECT` interception,
+  Envoy `ext_proc`, SDS certificate serving, and secret redaction.
+- Mutating webhook support for managed Envoy injection and existing-Envoy
+  deployments such as Istio-style sidecars.
+- Next.js WebUI with read-only workload inventory, workload detail pages, and a
+  proxy status surface ready for heartbeat data.
+- Docker Compose demos for Git, OpenCode, and Codex app-server workflows.
 
-- Go control plane with Kubernetes CRD policy loading.
-- Rust proxy-worker local and Envoy `ext_proc` modes; Go proxy-worker parity is
-  under active buildout.
-- SPIFFE mTLS between proxy-worker and control plane.
-- Vault JWT-SVID login and least-privilege Vault reconciliation.
-- SPIRE `ClusterSPIFFEID` reconciliation from `AirlockPolicy`.
-- Manual Kubernetes sidecar data path.
-- Initial mutating webhook sidecar injection.
-- Split managed Envoy injection from existing Envoy integrations.
-- Explicit proxy-worker runtime arguments, including local single-container
-  smoke coverage.
-- Initial security and failure smoke coverage for policy auth, Vault
-  least-privilege access, and log redaction.
-- Airlock-managed SPIRE registration cleanup for stale generated
-  `ClusterSPIFFEID` objects.
-
-## Layout
+## Repository Layout
 
 ```text
-control-plane/   Go module for the Airlock control plane
-proxy-worker/    Go proxy-worker implementation, currently under parity buildout
-proxy-worker-rs/ Rust proxy-worker implementation
-proto/           shared protobuf contracts
-schemas/         shared human policy schemas
-fixtures/        shared cross-language policy fixtures
+control-plane/    Go control plane and Kubernetes reconcilers
+proxy-worker/     Go proxy worker, the active worker implementation
+web-ui/           Next.js and Tailwind admin console
+deploy/           kind, Kubernetes, Envoy, and Helm assets
+examples/         Docker Compose, Kubernetes, and integration examples
+fixtures/         shared policy and provider fixtures
+proto/            protobuf contracts
+schemas/          policy schema files
+scripts/          local and Kubernetes smoke tests
+docs/             design notes and contributor guides
 ```
 
-## kind Lab
+## Quick Start
 
-The kind lab is the local integration environment. Prerequisites:
+Run the unit and package checks:
+
+```sh
+make test
+```
+
+Build the active proxy worker:
+
+```sh
+make build-proxy-worker
+```
+
+The binary is written to:
+
+```text
+dist/airlock-proxy-worker
+```
+
+Build container images:
+
+```sh
+make build-images
+make build-web-ui-image
+```
+
+## Local Proxy Worker
+
+The Go worker accepts one compact proxy selector:
+
+```text
+--proxy http:builtin[@listen]
+--proxy http:envoy[@listen]
+```
+
+Current defaults:
+
+- `http:builtin` listens on `127.0.0.1:18080`.
+- `http:envoy` listens on `127.0.0.1:50051`.
+- `--no-control-plane` loads a local compiled policy from `--policy`.
+
+Run a local builtin proxy:
+
+```sh
+make build-proxy-worker
+./dist/airlock-proxy-worker \
+  --proxy http:builtin@127.0.0.1:18080 \
+  --no-control-plane \
+  --policy fixtures/compiled/local-http.yaml
+```
+
+Enable builtin HTTPS interception by giving the worker a CA certificate and key.
+The workload must trust the CA certificate; the private key should only be
+visible to the proxy worker.
+
+```sh
+./dist/airlock-proxy-worker \
+  --proxy http:builtin@127.0.0.1:18080 \
+  --mitm-ca-cert .airlock/ca.crt \
+  --mitm-ca-key .airlock/ca.key \
+  --no-control-plane \
+  --policy fixtures/compiled/local-http.yaml
+```
+
+Run the Envoy integration locally:
+
+```sh
+./dist/airlock-proxy-worker \
+  --proxy http:envoy@127.0.0.1:50051 \
+  --no-control-plane \
+  --policy fixtures/compiled/local-http.yaml
+```
+
+Envoy config for local testing is in
+[`deploy/envoy/ext-proc-local.yaml`](deploy/envoy/ext-proc-local.yaml).
+
+## Kubernetes kind Lab
+
+The kind lab is the main integration environment.
+
+Prerequisites:
 
 - Docker
 - `kind`
 - `kubectl`
 - `helm`
 
-Create the cluster and install the baseline:
+Create the cluster, install Airlock and Vault, deploy the demo, and run the core
+smokes:
+
+```sh
+make demo
+```
+
+Or run the steps manually:
 
 ```sh
 make kind-up
@@ -57,351 +144,187 @@ make deploy-demo
 make test-e2e
 ```
 
-Or recreate and verify the whole local lab in one command:
-
-```sh
-make demo
-```
-
-The developer workflow is split so the platform pieces can move at different
-speeds:
-
-- `make install-airlock` installs CRDs, SPIRE, the Airlock control plane, RBAC,
-  and the admission webhook.
-- `make install-vault` installs the local Vault dev server used by the lab.
-- `make deploy-demo` applies the demo policy, provider config, echo upstream,
-  proxy-worker, and sample workload.
-- `make test-e2e` runs the demo, Vault, injected sidecar, existing Envoy, and
-  security smokes.
-
-This creates the core namespaces:
+The lab creates these namespaces:
 
 - `airlock-system`
 - `spire-system`
 - `vault`
 - `demo`
 
-The baseline currently includes:
+The demo path includes the control plane, SPIRE, Vault, an echo upstream, an
+Airlock proxy worker, and the `code-agent` workload.
 
-- SPIRE server and agent in `spire-system`
-- Vault dev server in `vault`
-- Airlock control-plane deployment in `airlock-system`
-- Airlock proxy-worker deployment in `demo`
-- echo upstream service in `demo`
-- `code-agent` workload in `demo`
+Reusable Airlock installation assets live in `deploy/k8s`. Runnable Kubernetes
+scenarios live under [`examples/k8s`](examples/k8s):
 
-The control plane loads policy from Kubernetes CRDs in the active demo path.
+- [`basic-egress`](examples/k8s/basic-egress): standalone proxy worker, Envoy,
+  echo upstream, and workload/policy resources.
+- [`injected-sidecar`](examples/k8s/injected-sidecar): webhook-managed Envoy
+  and proxy worker injection.
+- [`existing-envoy`](examples/k8s/existing-envoy): app-owned Envoy with only
+  the proxy worker injected.
 
-## Docker Compose Git Demo
+## Kubernetes Data Paths
 
-There is also a local Compose demo for the copy-binary-into-image workflow. It
-runs the Airlock control plane in one container, and a Git checkout app plus the
-Airlock proxy-worker in another container under different Unix users. The app
-process has no GitHub credential file access; Git reaches a private repository
-through the proxy, which injects HTTPS Basic auth at the last responsible
-moment.
+Airlock supports two Kubernetes sidecar shapes:
+
+- Managed Envoy: Airlock injects Envoy and the proxy worker.
+- Existing Envoy: Airlock injects only the proxy worker and SPIRE socket volume;
+  an existing Envoy sidecar calls the local `ext_proc` listener.
+
+Run the Kubernetes smokes:
+
+```sh
+make spiffe-policy-smoke
+make vault-jwt-setup
+make k8s-egress-smoke
+make injected-sidecar-smoke
+make existing-envoy-smoke
+```
+
+Run fail-closed and TLS/SDS coverage:
+
+```sh
+make security-smoke
+make fail-closed-smoke
+make fail-closed-k8s-smoke
+make tls-termination-smoke
+make envoy-sds-tls-smoke
+make envoy-connect-sds-smoke
+```
+
+## Docker Compose Demos
+
+### Git Checkout
+
+The Git demo runs the control plane in one container and an app plus Airlock
+proxy worker in another. The app runs as an unprivileged user and does not have
+direct access to GitHub credentials; the proxy injects HTTPS Basic auth.
 
 ```sh
 export GITHUB_PAT=github_pat_or_classic_pat_with_repo_access
 make compose-git-demo
 ```
 
-Variants are available for Envoy-owned CONNECT/TLS termination and for local
-policy without a control plane:
+Variants:
 
 ```sh
 make compose-git-envoy-demo
 make compose-git-no-control-plane-demo
 ```
 
-See [examples/docker-compose-git](examples/docker-compose-git) for details.
+See [`examples/compose/git`](examples/compose/git).
 
-## OpenCode Headless Demo
+### Proxy Observability
 
-For trying OpenCode behind Airlock, there is a Compose example that runs the
-OpenCode backend in Docker, routes proxy-aware outbound HTTP(S) traffic through
-an Airlock proxy that allows `api.openai.com:443`, and attaches from your local
-TUI:
+The proxy observability demo keeps the control plane, proxy worker, Web UI, and
+curl client in separate containers. Use it when you want to watch heartbeats and
+allow/deny counters without a one-shot app container exiting.
+
+```sh
+make compose-proxy-observability-up
+```
+
+Then open `http://127.0.0.1:13000/proxies` and run curl requests from the
+client container.
+
+See [`examples/compose/proxy-observability`](examples/compose/proxy-observability).
+
+### OpenCode
+
+The OpenCode example runs a headless OpenCode server in Docker and routes
+proxy-aware HTTP(S) egress through Airlock.
 
 ```sh
 make opencode-headless-up
 make opencode-headless-attach
 ```
 
-See [examples/opencode-headless](examples/opencode-headless) for the full
-two-terminal flow.
+See [`examples/compose/opencode-headless`](examples/compose/opencode-headless).
 
-## Codex App Server Demo
+### Codex App Server
 
-For trying the experimental Codex app server behind Airlock, there is a Compose
-example that runs `codex app-server` in Docker, routes proxy-aware outbound
-HTTP(S) traffic through an Airlock proxy that allows `api.openai.com:443` and
-`chatgpt.com:443`, plus `files.openai.com:443`, and connects from your local
-Codex CLI:
+The Codex app-server example runs `codex app-server` in Docker and connects
+from the local Codex CLI.
 
 ```sh
 make codex-app-server-up
 make codex-app-server-connect
 ```
 
-See [examples/codex-app-server](examples/codex-app-server) for details.
+See [`examples/compose/codex-app-server`](examples/compose/codex-app-server).
 
 ## WebUI
 
-The Airlock WebUI is a Next.js and Tailwind admin console. The first view is a
-read-only policy inventory backed by the control-plane admin API:
+The WebUI is a Next.js and Tailwind admin console. It currently exposes:
+
+- read-only workload inventory
+- read-only workload detail pages
+- proxy status page backed by the control-plane admin API
+- proxy detail pages with rolling allow, deny, and proxy error counters
+
+Run it locally against a control-plane admin listener:
 
 ```sh
 cd web-ui
-AIRLOCK_CONTROL_PLANE_URL=http://127.0.0.1:8080 npm run dev
+AIRLOCK_CONTROL_PLANE_URL=http://127.0.0.1:18089 \
+AIRLOCK_CONTROL_PLANE_TOKEN="$OIDC_ACCESS_TOKEN" \
+AIRLOCK_WEB_AUTH_MODE=oidc \
+AIRLOCK_WEB_SESSION_SECRET="$(openssl rand -base64 32)" \
+AIRLOCK_WEB_OIDC_ISSUER=https://issuer.example.test \
+AIRLOCK_WEB_OIDC_CLIENT_ID=airlock-web \
+AIRLOCK_WEB_OIDC_CLIENT_SECRET=... \
+npm run dev
 ```
 
-See [docs/web-ui-production-plan.md](docs/web-ui-production-plan.md) for the
-OIDC/OAuth, sign-up, and RBAC production plan.
+The control plane splits worker and admin auth. Workers should use the worker
+listener with SPIFFE mTLS. The WebUI should use an admin listener configured
+with OIDC bearer validation and RBAC, for example
+`--worker-auth=spiffe --admin-listen=:8081 --admin-auth=oidc`.
 
-## Smoke Tests
+The WebUI is its own browser auth boundary. Its API routes and server-rendered
+pages require a signed WebUI session before the server uses
+`AIRLOCK_CONTROL_PLANE_TOKEN` to call the control-plane admin API.
 
-Run the local control-plane policy smoke with:
+Production planning for OIDC/OAuth, sign-up, RBAC, proxy status, and audit
+surfaces lives in
+[`docs/web-ui-production-plan.md`](docs/web-ui-production-plan.md).
 
-```sh
-make local-control-plane-smoke
-```
+Proxy heartbeat and OTEL audit design lives in
+[`docs/proxy-status-and-audit-telemetry.md`](docs/proxy-status-and-audit-telemetry.md).
 
-The smoke test starts:
+## Secret Providers
 
-- Go control plane on `127.0.0.1:18082`
-- Rust proxy-worker on `127.0.0.1:18080`
-- local upstream on `127.0.0.1:18081`
+Vault is the first secret provider. The control plane combines
+`AirlockWorkload`, referenced `AirlockPolicy` objects, and
+`SecretProviderConfig` into one compiled policy per workload, then reconciles
+Vault ACL policy and JWT roles. The proxy worker obtains its own SPIFFE JWT-SVID
+and reads secrets directly from Vault; the control plane does not read secret
+values.
 
-It verifies that the proxy-worker fetches policy from the control plane, applies
-the policy to an outbound request, and emits the policy version in logs.
-
-Run the SPIFFE-authenticated policy fetch smoke with:
-
-```sh
-make spiffe-policy-smoke
-```
-
-The smoke test verifies that an unauthenticated workload cannot fetch policy,
-that the proxy-worker can fetch policy with its SVID, and that the control-plane
-audit log records the proxy-worker SPIFFE identity.
-
-The unauthenticated request below should fail:
-
-```sh
-kubectl exec -n demo deploy/code-agent -- \
-  curl -kfsS --get \
-  --data-urlencode 'workload_identity=spiffe://airlock.local/ns/demo/sa/code-agent/component/airlock-proxy-worker' \
-  https://airlock-control-plane.airlock-system.svc.cluster.local:8443/v1/policies
-```
-
-Bootstrap Vault JWT auth and run the full Kubernetes egress smoke with:
-
-```sh
-make vault-jwt-setup
-make k8s-egress-smoke
-```
-
-The smoke test verifies that the proxy-worker logs into Vault with its SPIFFE
-identity, preloads the configured secret, injects it into an outbound request,
-and redacts the secret from proxy-worker logs.
-
-The demo `AirlockPolicy` references a `SecretProviderConfig`; the control plane
-resolves Vault address, auth mount, audience, and generated role into the
-compiled policy returned to the proxy-worker. The proxy-worker still obtains its
-own SPIFFE JWT-SVID and reads secrets directly from Vault. The control plane
-uses a Vault admin token only to write Vault ACL policies and JWT roles; it does
-not read secret values.
-
-The control plane reads `AirlockPolicy` and `SecretProviderConfig` objects from
-the Kubernetes API, recompiles policy on a short reconciliation interval,
-reuses the Vault reconciler, and patches `AirlockPolicy/status` when the policy
-is ready.
-
-The static manifest still grants the control plane its own bootstrap identity.
-The proxy-worker `ClusterSPIFFEID` is generated from `AirlockPolicy.spec.workload`
-and reconciled by the control plane.
-
-The demo `code-agent` pod now contains the app container, an Envoy sidecar, and
-the Airlock proxy-worker sidecar. The app calls Envoy on `127.0.0.1:10000`;
-Envoy calls the proxy-worker through `ext_proc`; the proxy-worker fetches policy
-with SPIFFE mTLS, reads Vault directly, mutates allowed requests, and denies
-unmatched destinations.
-
-Run the managed-injection sidecar smoke with:
-
-```sh
-make injected-sidecar-smoke
-```
-
-The control plane serves a Kubernetes admission webhook on port `9443`. Pods in
-opted-in namespaces with `airlock.dev/enabled: "true"` and
-`airlock.dev/policy: code-agent` are admitted with generated Envoy config, an
-Envoy sidecar, the Airlock proxy-worker sidecar, and the SPIRE socket volume.
-The smoke test proves that the source deployment is app-only while the admitted
-pod gets the sidecars and still completes the same allow/deny/Vault flow.
-
-Run the existing-Envoy and single-local smokes with:
-
-```sh
-make existing-envoy-smoke
-make single-local-smoke
-```
-
-The webhook supports `airlock.dev/envoy-mode: managed` for the demo path where
-Airlock injects Envoy, and `airlock.dev/envoy-mode: existing` for clusters
-where Envoy is supplied by Istio, a mesh injector, or platform config. In
-`existing` mode Airlock injects only the proxy-worker sidecar, SPIRE socket
-volume, and SPIFFE selector label; the existing Envoy must be configured to call
-the local proxy-worker `ext_proc` listener on `127.0.0.1:50051`.
-
-The Go proxy-worker requires exactly one compact proxy selector:
-
-- `--proxy http:builtin[@listen]`: start the builtin HTTP proxy. If `listen`
-  is omitted it defaults to `127.0.0.1:18080`.
-- `--proxy http:envoy[@listen]`: start the Envoy ext_proc server. If `listen`
-  is omitted it defaults to `127.0.0.1:50051`.
-- `--mitm-ca-cert` and `--mitm-ca-key`: enable builtin HTTPS interception for
-  `CONNECT` requests by loading the Airlock MITM CA.
-- `--no-control-plane`: use local `--policy` instead of fetching policy from the
-  control plane.
-
-`make single-local-smoke` starts a local upstream and a single
-proxy-worker process, verifies allow/deny behavior, confirms the env secret
-reaches the upstream, and checks that proxy logs redact the secret.
-
-Run the security and fail-closed smokes with:
-
-```sh
-make security-smoke
-make fail-closed-smoke
-make fail-closed-k8s-smoke
-```
-
-These smokes verify unauthenticated policy fetches fail, generated Vault policy
-can read only the referenced secret path, unreferenced secret reads fail,
-control-plane and proxy-worker logs do not contain the Vault secret value, and
-identity, policy, Vault, SDS, and secret-provider failures deny traffic by
-default.
-
-## Go Proxy-Worker Rewrite
-
-The Go rewrite currently duplicates the Rust worker unit-test surface and adds
-the first builtin HTTPS interception and Envoy ext_proc serving slices. The
-covered paths include builtin HTTP proxying, `CONNECT` MITM with generated leaf
-certificates, rewrite/redaction behavior, env/file secrets, local policy loading,
-control-plane policy fetch, ext_proc decision logic, and the Envoy ext_proc gRPC
-stream:
-
-```sh
-make test-proxy-worker
-make build-proxy-worker
-make proxy-worker-local-smoke
-make build-proxy-worker-image
-```
-
-`make build-proxy-worker` writes a static binary to
-`dist/airlock-proxy-worker`. `make build-proxy-worker-image` builds a scratch
-carrier image tagged `airlock-proxy-worker:dev`, intended for the
-copy-into-user-image workflow. The Go worker is the active path for builtin
-proxying, Envoy ext_proc, SDS certificates, Vault-backed secrets, and the
-Kubernetes smoke tests. The Rust worker is retained as `proxy-worker-rs` for
-reference during the rewrite.
-
-Example local Go worker invocation:
-
-```sh
-./dist/airlock-proxy-worker \
-  --proxy http:builtin@127.0.0.1:18080 \
-  --no-control-plane \
-  --policy fixtures/policies/local-http.yaml
-```
-
-To intercept HTTPS `CONNECT` traffic, provide a CA whose public certificate is
-trusted by the workload and whose private key is visible only to the
-proxy-worker:
-
-```sh
-./dist/airlock-proxy-worker \
-  --proxy http:builtin@127.0.0.1:18080 \
-  --mitm-ca-cert .airlock/ca.crt \
-  --mitm-ca-key .airlock/ca.key \
-  --no-control-plane \
-  --policy fixtures/policies/local-http.yaml
-```
-
-The Go worker can also serve Envoy ext_proc locally:
-
-```sh
-./dist/airlock-proxy-worker \
-  --proxy http:envoy@127.0.0.1:50051 \
-  --no-control-plane \
-  --policy fixtures/policies/local-http.yaml
-```
-
-In Envoy mode, Envoy can remain the TLS terminator while the proxy-worker
-provides SDS certificates alongside ext_proc policy decisions. The current smoke
-coverage includes direct Envoy TLS termination and explicit `CONNECT` MITM:
-
-```sh
-make envoy-sds-tls-smoke
-make envoy-connect-sds-smoke
-```
+`SecretProviderConfig` is namespaced. A workload `secretProviderRef` without an
+explicit namespace resolves in the workload namespace, so each environment can
+define its own `SecretProviderConfig/default` while sharing the same policies
+and workload manifests. Vault defaults can set `pathPrefix` to map logical
+policy paths such as `github/token` to environment-specific paths such as
+`prod/github/token`.
 
 Secret provider code is split by responsibility under
 `proxy-worker/internal/worker`. See
 [`docs/contributing/secret-providers.md`](docs/contributing/secret-providers.md)
-for the provider layout and the checklist for adding a backend.
+for the provider layout and contribution checklist.
 
-## Local Proxy-Worker
-
-The Rust worker still has the original local HTTP proxy mode:
+## Useful Checks
 
 ```sh
-cd proxy-worker-rs
-cargo run -p airlock-proxy-worker -- \
-  --no-control-plane \
-  --policy ../fixtures/policies/local-http.yaml \
-  --listen 127.0.0.1:18080
+make test
+make test-proxy-worker
+make test-web-ui
+make proxy-worker-local-smoke
+make single-local-smoke
+make local-control-plane-smoke
 ```
 
-The Rust local mode supports plain HTTP forwarding, egress allow/deny checks,
-env/file secret resolution, header rewrites, and redacted event logs. The Go
-worker is now the path for builtin HTTPS interception work.
-
-## Envoy ext_proc
-
-The Envoy `ext_proc` gRPC server uses the same policy, secret, rewrite, and
-redaction logic as local proxy mode. The Rust worker has the original
-implementation, and the Go worker now has a parity ext_proc server:
-
-```sh
-./dist/airlock-proxy-worker \
-  --proxy http:envoy@127.0.0.1:50051 \
-  --no-control-plane \
-  --policy fixtures/policies/local-http.yaml
-```
-
-A local Envoy config is available at `deploy/envoy/ext-proc-local.yaml`. It
-expects:
-
-- proxy-worker ext_proc server on `127.0.0.1:50051`
-- upstream HTTP service on `127.0.0.1:18081`
-- Envoy listener on `127.0.0.1:10000`
-
-## Checkpoints
-
-Run the contract and proxy package checks:
-
-```sh
-cd control-plane && go test ./...
-cd proxy-worker-rs && cargo test --workspace
-```
-
-The Go and Rust packages both load the same policy fixtures and enforce the
-initial validation rules:
-
-- wildcard secret paths are rejected
-- unknown secret providers are rejected
-- egress rules require a host
-- unsafe Vault paths under `sys/` or `auth/` are rejected
+The current checks cover policy validation, control-plane auth, proxy allow/deny
+behavior, secret redaction, Vault access boundaries, Envoy `ext_proc`, SDS, and
+fail-closed behavior.

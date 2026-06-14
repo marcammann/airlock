@@ -1,20 +1,133 @@
 @import "tailwindcss";
 
+@font-face {
+  font-family: "ABC Monument Grotesk";
+  src: url("/fonts/abc-monument-grotesk-light.woff2") format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 300;
+}
+
+@font-face {
+  font-family: "ABC Monument Grotesk";
+  src: url("/fonts/abc-monument-grotesk-regular.woff2") format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 400;
+}
+
+@font-face {
+  font-family: "ABC Monument Grotesk";
+  src: url("/fonts/abc-monument-grotesk-regular-italic.woff2") format("woff2");
+  font-display: swap;
+  font-style: italic;
+  font-weight: 400;
+}
+
+@font-face {
+  font-family: "ABC Monument Grotesk";
+  src: url("/fonts/abc-monument-grotesk-medium.woff2") format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 500;
+}
+
+@font-face {
+  font-family: "ABC Monument Grotesk";
+  src: url("/fonts/abc-monument-grotesk-medium-italic.woff2") format("woff2");
+  font-display: swap;
+  font-style: italic;
+  font-weight: 500;
+}
+
+@font-face {
+  font-family: "ABC Monument Grotesk";
+  src: url("/fonts/abc-monument-grotesk-bold.woff2") format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 700;
+}
+
+@font-face {
+  font-family: "ABC Monument Grotesk Mono";
+  src: url("/fonts/abc-monument-grotesk-mono-regular.woff2") format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 400;
+}
+
+@font-face {
+  font-family: "ABC Monument Grotesk Mono";
+  src: url("/fonts/abc-monument-grotesk-mono-medium.woff2") format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 500;
+}
+
+@font-face {
+  font-family: "ABC Monument Grotesk Semi Mono";
+  src: url("/fonts/abc-monument-grotesk-semi-mono-regular.woff2")
+    format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 400;
+}
+
+@font-face {
+  font-family: "ABC Monument Grotesk Semi Mono";
+  src: url("/fonts/abc-monument-grotesk-semi-mono-light.woff2")
+    format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 300;
+}
+
+@font-face {
+  font-family: "ABC Monument Grotesk Semi Mono";
+  src: url("/fonts/abc-monument-grotesk-semi-mono-medium.woff2")
+    format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 500;
+}
+
+@font-face {
+  font-family: "ABC Monument Grotesk Semi Mono";
+  src: url("/fonts/abc-monument-grotesk-semi-mono-bold.woff2")
+    format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 700;
+}
+
 :root {
-  --background: #f7f8fb;
-  --foreground: #17202a;
+  --background: #b8b8b8;
+  --foreground: #000000;
+  --accent: #5200cc;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: "Aptos", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-  --font-mono: "SFMono-Regular", "Roboto Mono", Consolas, "Liberation Mono",
-    monospace;
+  --font-sans: "ABC Monument Grotesk", "Aptos", "Segoe UI", "Helvetica Neue",
+    Arial, sans-serif;
+  --font-mono: "ABC Monument Grotesk Mono", "SFMono-Regular", "Roboto Mono",
+    Consolas, "Liberation Mono", monospace;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans);
+}
+
+.brand-semi-mono {
+  font-family: "ABC Monument Grotesk Semi Mono", "ABC Monument Grotesk Mono",
+    "SFMono-Regular", monospace;
+  font-size: 14px;
+}
+
+.font-semi-mono {
+  font-family: "ABC Monument Grotesk Semi Mono", "ABC Monument Grotesk Mono",
+    "SFMono-Regular", monospace;
 }

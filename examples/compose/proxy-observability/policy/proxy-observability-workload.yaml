@@ -1,0 +1,11 @@
+apiVersion: airlock.dev/v1alpha1
+kind: AirlockWorkload
+metadata:
+  name: compose-proxy-observability
+spec:
+  workload:
+    spiffeId: spiffe://airlock.local/compose/proxy-observability/component/airlock-proxy-worker
+    namespace: compose
+    serviceAccount: proxy-worker
+  policyRefs:
+    - name: compose-proxy-observability

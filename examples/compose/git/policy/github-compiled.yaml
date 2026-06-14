@@ -1,0 +1,21 @@
+version: airlock.dev/v1alpha1
+policyName: compose-github-checkout
+workload:
+  spiffeId: spiffe://airlock.local/compose/git-checkout/component/airlock-proxy-worker
+  namespace: compose
+  serviceAccount: git-app
+egress:
+  - name: github-https
+    scheme: https
+    host: github.com
+    port: 443
+    sourcePolicy:
+      name: compose-github-checkout
+    rewrites:
+      - target: header
+        name: Authorization
+        valueTemplate: "Basic {{secret}}"
+        valueFrom:
+          provider: file
+          name: github-basic-auth
+          file: /run/airlock/secrets/github-basic-auth

@@ -85,7 +85,7 @@ func ReconcileVault(ctx context.Context, store *PolicyStore, opts VaultReconcile
 		record := map[string]any{
 			"ts":               time.Now().UTC().Format(time.RFC3339Nano),
 			"event":            "vault_reconcile",
-			"policyName":       compiled.PolicyName,
+			"workloadName":     compiled.PolicyName,
 			"vaultPolicy":      policyName,
 			"vaultRole":        vault.Role,
 			"workloadIdentity": compiled.Workload.SPIFFEID,

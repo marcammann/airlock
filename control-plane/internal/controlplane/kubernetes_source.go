@@ -35,8 +35,8 @@ type KubernetesPolicySourceOptions struct {
 }
 
 type KubernetesPolicyStatusUpdate struct {
-	Policy policy.AirlockPolicy
-	Status policy.Status
+	Workload policy.AirlockWorkload
+	Status   policy.Status
 }
 
 type kubernetesClient struct {
@@ -72,33 +72,37 @@ func LoadPolicyStoreFromKubernetes(ctx context.Context, opts KubernetesPolicySou
 	if err != nil {
 		return nil, nil, err
 	}
+	workloads, err := listAirlockWorkloads(ctx, client, namespace)
+	if err != nil {
+		return nil, nil, err
+	}
 
-	compiledPolicies := make([]policy.CompiledPolicy, 0, len(policies))
-	updates := make([]KubernetesPolicyStatusUpdate, 0, len(policies))
-	for _, input := range policies {
+	compiledPolicies := make([]policy.CompiledPolicy, 0, len(workloads))
+	updates := make([]KubernetesPolicyStatusUpdate, 0, len(workloads))
+	for _, input := range workloads {
 		providerConfig, err := resolveSecretProviderConfig(input, providerConfigs)
 		if err != nil {
-			return nil, nil, fmt.Errorf("resolve secret provider for policy %s/%s: %w", input.Metadata.Namespace, input.Metadata.Name, err)
+			return nil, nil, fmt.Errorf("resolve secret provider for workload %s/%s: %w", input.Metadata.Namespace, input.Metadata.Name, err)
 		}
-		compiled, err := policy.CompileWithSecretProvider(input, providerConfig)
+		compiled, err := policy.CompileWorkloadWithSecretProvider(input, policies, providerConfig)
 		if err != nil {
-			return nil, nil, fmt.Errorf("compile policy %s/%s: %w", input.Metadata.Namespace, input.Metadata.Name, err)
+			return nil, nil, fmt.Errorf("compile workload %s/%s: %w", input.Metadata.Namespace, input.Metadata.Name, err)
 		}
 		compiledPolicies = append(compiledPolicies, compiled)
 		updates = append(updates, KubernetesPolicyStatusUpdate{
-			Policy: input,
-			Status: readyPolicyStatus(input, compiled, false),
+			Workload: input,
+			Status:   readyWorkloadStatus(input, compiled, false),
 		})
 	}
 
-	store, err := NewPolicyStoreFromCompiled(compiledPolicies)
+	store, err := NewPolicyStoreFromResources(policies, workloads, compiledPolicies)
 	if err != nil {
 		return nil, nil, err
 	}
 	return store, updates, nil
 }
 
-func PatchAirlockPolicyStatus(ctx context.Context, opts KubernetesPolicySourceOptions, input policy.AirlockPolicy, status policy.Status) error {
+func PatchAirlockWorkloadStatus(ctx context.Context, opts KubernetesPolicySourceOptions, input policy.AirlockWorkload, status policy.Status) error {
 	client, err := newKubernetesClient(opts)
 	if err != nil {
 		return err
@@ -108,14 +112,14 @@ func PatchAirlockPolicyStatus(ctx context.Context, opts KubernetesPolicySourceOp
 		namespace = strings.TrimSpace(opts.Namespace)
 	}
 	if namespace == "" || strings.TrimSpace(input.Metadata.Name) == "" {
-		return fmt.Errorf("policy namespace and name are required for status patch")
+		return fmt.Errorf("workload namespace and name are required for status patch")
 	}
 
-	path := namespacedAirlockPath(namespace, "airlockpolicies") + "/" + url.PathEscape(input.Metadata.Name) + "/status"
+	path := namespacedAirlockPath(namespace, "airlockworkloads") + "/" + url.PathEscape(input.Metadata.Name) + "/status"
 	return client.patchJSON(ctx, path, map[string]policy.Status{"status": status})
 }
 
-func readyPolicyStatus(input policy.AirlockPolicy, compiled policy.CompiledPolicy, vaultReady bool) policy.Status {
+func readyWorkloadStatus(input policy.AirlockWorkload, compiled policy.CompiledPolicy, vaultReady bool) policy.Status {
 	status := "False"
 	if vaultReady {
 		status = "True"
@@ -138,7 +142,7 @@ func readyPolicyStatus(input policy.AirlockPolicy, compiled policy.CompiledPolic
 	}
 }
 
-func failedPolicyStatus(input policy.AirlockPolicy, reason string, message string) policy.Status {
+func failedWorkloadStatus(input policy.AirlockWorkload, reason string, message string) policy.Status {
 	return policy.Status{
 		ObservedGeneration: input.Metadata.Generation,
 		Spire:              policy.SubsystemStatus{Ready: true},
@@ -183,6 +187,21 @@ func listAirlockPolicies(ctx context.Context, client kubernetesClient, namespace
 	}
 	if err := client.getJSON(ctx, namespacedAirlockPath(namespace, "airlockpolicies"), &list); err != nil {
 		return nil, fmt.Errorf("list AirlockPolicy objects: %w", err)
+	}
+	for i := range list.Items {
+		if list.Items[i].Metadata.Namespace == "" {
+			list.Items[i].Metadata.Namespace = namespace
+		}
+	}
+	return list.Items, nil
+}
+
+func listAirlockWorkloads(ctx context.Context, client kubernetesClient, namespace string) ([]policy.AirlockWorkload, error) {
+	var list struct {
+		Items []policy.AirlockWorkload `json:"items"`
+	}
+	if err := client.getJSON(ctx, namespacedAirlockPath(namespace, "airlockworkloads"), &list); err != nil {
+		return nil, fmt.Errorf("list AirlockWorkload objects: %w", err)
 	}
 	for i := range list.Items {
 		if list.Items[i].Metadata.Namespace == "" {

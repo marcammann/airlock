@@ -2,6 +2,7 @@
 set -eu
 
 KUSTOMIZE_DIR="${KUSTOMIZE_DIR:-deploy/k8s}"
+EXAMPLE_KUSTOMIZE_DIR="${EXAMPLE_KUSTOMIZE_DIR:-examples/k8s/basic-egress}"
 SMOKE_NAME="${SMOKE_NAME:-k8s-egress}"
 ENVOY_URL="${ENVOY_URL:-http://127.0.0.1:10000/healthz}"
 ALLOWED_HOST="${ALLOWED_HOST:-echo-upstream.demo.svc.cluster.local:8080}"
@@ -90,6 +91,7 @@ if [ -d "$KUSTOMIZE_DIR/crds" ]; then
 fi
 
 kubectl apply -k "$KUSTOMIZE_DIR"
+kubectl apply -k "$EXAMPLE_KUSTOMIZE_DIR"
 kubectl delete deployment airlock-proxy-worker -n demo --ignore-not-found
 kubectl delete clusterspiffeid airlock-proxy-worker --ignore-not-found
 kubectl rollout restart deployment/airlock-control-plane -n airlock-system
@@ -122,13 +124,13 @@ wait_for_control_plane_log "vault_reconcile"
 wait_for_control_plane_log "reconciled Vault intent: policies=1 roles=1"
 
 for attempt in $(seq 1 30); do
-  ready_status="$(kubectl get airlockpolicy code-agent -n airlock-system -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
+  ready_status="$(kubectl get airlockworkload code-agent -n airlock-system -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
   if [ "$ready_status" = "True" ]; then
     break
   fi
   if [ "$attempt" = "30" ]; then
-    kubectl get airlockpolicy code-agent -n airlock-system -o yaml >&2 || true
-    echo "AirlockPolicy/code-agent did not become Ready" >&2
+    kubectl get airlockworkload code-agent -n airlock-system -o yaml >&2 || true
+    echo "AirlockWorkload/code-agent did not become Ready" >&2
     exit 1
   fi
   sleep 1

@@ -1,0 +1,95 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: airlockworkloads.airlock.dev
+spec:
+  group: airlock.dev
+  scope: Namespaced
+  names:
+    plural: airlockworkloads
+    singular: airlockworkload
+    kind: AirlockWorkload
+    shortNames:
+      - alw
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Ready
+          type: string
+          jsonPath: .status.conditions[?(@.type=="Ready")].status
+        - name: PolicyHash
+          type: string
+          jsonPath: .status.policyHash
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: ["spec"]
+          properties:
+            spec:
+              type: object
+              required: ["workload", "policyRefs"]
+              properties:
+                secretProviderRef:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                    namespace:
+                      type: string
+                workload:
+                  type: object
+                  required: ["spiffeId"]
+                  properties:
+                    spiffeId:
+                      type: string
+                    namespace:
+                      type: string
+                    serviceAccount:
+                      type: string
+                policyRefs:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: ["name"]
+                    properties:
+                      name:
+                        type: string
+                      namespace:
+                        type: string
+            status:
+              type: object
+              properties:
+                observedGeneration:
+                  type: integer
+                  format: int64
+                policyHash:
+                  type: string
+                spire:
+                  type: object
+                  properties:
+                    ready:
+                      type: boolean
+                vault:
+                  type: object
+                  properties:
+                    ready:
+                      type: boolean
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required: ["type", "status"]
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      reason:
+                        type: string
+                      message:
+                        type: string

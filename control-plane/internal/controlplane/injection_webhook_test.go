@@ -24,8 +24,8 @@ func TestInjectionWebhookInjectsEnvoyAndProxyWorker(t *testing.T) {
 					"name":      "code-agent-injected",
 					"namespace": "demo",
 					"annotations": map[string]string{
-						InjectionEnabledAnnotation: "true",
-						InjectionPolicyAnnotation:  "code-agent",
+						InjectionEnabledAnnotation:  "true",
+						InjectionWorkloadAnnotation: "code-agent",
 					},
 				},
 				"spec": map[string]any{
@@ -64,6 +64,9 @@ func TestInjectionWebhookInjectsEnvoyAndProxyWorker(t *testing.T) {
 	}
 	if !patchAddsContainer(patch, "proxy-worker") {
 		t.Fatalf("patch does not add proxy-worker container: %#v", patch)
+	}
+	if !patchAddsContainerDownwardAPIEnvVar(patch, "proxy-worker", "POD_IP", "status.podIP") {
+		t.Fatalf("patch does not add proxy-worker POD_IP env var: %#v", patch)
 	}
 	if !patchAddsVolume(patch, "spire-agent-socket") {
 		t.Fatalf("patch does not add SPIRE socket volume: %#v", patch)
@@ -122,7 +125,7 @@ func TestInjectionWebhookExistingEnvoyModeInjectsOnlyProxyWorker(t *testing.T) {
 					"namespace": "demo",
 					"annotations": map[string]string{
 						InjectionEnabledAnnotation:   "true",
-						InjectionPolicyAnnotation:    "code-agent",
+						InjectionWorkloadAnnotation:  "code-agent",
 						InjectionEnvoyModeAnnotation: EnvoyModeExisting,
 					},
 				},
@@ -162,6 +165,9 @@ func TestInjectionWebhookExistingEnvoyModeInjectsOnlyProxyWorker(t *testing.T) {
 	}
 	if !patchAddsContainer(patch, "proxy-worker") {
 		t.Fatalf("patch does not add proxy-worker container: %#v", patch)
+	}
+	if !patchAddsContainerDownwardAPIEnvVar(patch, "proxy-worker", "POD_IP", "status.podIP") {
+		t.Fatalf("patch does not add proxy-worker POD_IP env var: %#v", patch)
 	}
 	if !patchAddsVolume(patch, "spire-agent-socket") {
 		t.Fatalf("patch does not add SPIRE socket volume: %#v", patch)
@@ -206,7 +212,7 @@ func TestInjectionWebhookDeniesUnsupportedEnvoyMode(t *testing.T) {
 	}
 }
 
-func TestInjectionWebhookDeniesMismatchedPolicyAnnotation(t *testing.T) {
+func TestInjectionWebhookDeniesMismatchedWorkloadAnnotation(t *testing.T) {
 	server := testInjectionServer(t)
 	review := admissionReview{
 		APIVersion: "admission.k8s.io/v1",
@@ -218,8 +224,8 @@ func TestInjectionWebhookDeniesMismatchedPolicyAnnotation(t *testing.T) {
 				"metadata": map[string]any{
 					"name": "bad-policy",
 					"annotations": map[string]string{
-						InjectionEnabledAnnotation: "true",
-						InjectionPolicyAnnotation:  "wrong-policy",
+						InjectionEnabledAnnotation:  "true",
+						InjectionWorkloadAnnotation: "wrong-workload",
 					},
 				},
 				"spec": map[string]any{
@@ -245,12 +251,16 @@ func testInjectionServer(t *testing.T) *Server {
 	t.Helper()
 	store, err := LoadPolicyStoreWithSecretProviderConfigs(
 		[]string{filepath.Join("..", "..", "..", "fixtures", "policies", "valid-vault-provider-ref.yaml")},
+		[]string{filepath.Join("..", "..", "..", "fixtures", "workloads", "code-agent-vault.yaml")},
 		[]string{filepath.Join("..", "..", "..", "fixtures", "secret-provider-configs", "default-vault.yaml")},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewServerWithAuth(store, AuthModeSPIFFE, "", nil)
+	return NewServerWithOptions(store, ServerOptions{
+		WorkerAuthMode: AuthModeSPIFFE,
+		AdminAuthMode:  AuthModeSPIFFE,
+	})
 }
 
 func postAdmissionReview(t *testing.T, server *Server, review admissionReview) admissionReview {
@@ -301,6 +311,37 @@ func patchAddsContainer(patch []jsonPatchOperation, name string) bool {
 		value, ok := op.Value.(map[string]any)
 		if ok && value["name"] == name {
 			return true
+		}
+	}
+	return false
+}
+
+func patchAddsContainerDownwardAPIEnvVar(patch []jsonPatchOperation, containerName string, envName string, fieldPath string) bool {
+	for _, op := range patch {
+		if op.Path != "/spec/containers/-" {
+			continue
+		}
+		container, ok := op.Value.(map[string]any)
+		if !ok || container["name"] != containerName {
+			continue
+		}
+		env, ok := container["env"].([]any)
+		if !ok {
+			continue
+		}
+		for _, item := range env {
+			object, ok := item.(map[string]any)
+			if !ok || object["name"] != envName {
+				continue
+			}
+			valueFrom, ok := object["valueFrom"].(map[string]any)
+			if !ok {
+				continue
+			}
+			fieldRef, ok := valueFrom["fieldRef"].(map[string]any)
+			if ok && fieldRef["fieldPath"] == fieldPath {
+				return true
+			}
 		}
 	}
 	return false

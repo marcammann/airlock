@@ -77,7 +77,7 @@ done
   AIRLOCK_TEST_TOKEN=proxy-worker-local-token ./dist/airlock-proxy-worker \
     --proxy http:builtin@127.0.0.1:18080 \
     --no-control-plane \
-    --policy fixtures/policies/local-http.yaml
+    --policy fixtures/compiled/local-http.yaml
 ) >"$PROXY_LOG" 2>&1 &
 PROXY_PID="$!"
 

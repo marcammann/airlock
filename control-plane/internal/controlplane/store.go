@@ -11,21 +11,34 @@ import (
 
 type PolicyStore struct {
 	byWorkload map[string]policy.CompiledPolicy
+	policies   []policy.AirlockPolicy
+	workloads  []policy.AirlockWorkload
 }
 
-func LoadPolicyStore(paths []string) (*PolicyStore, error) {
-	return LoadPolicyStoreWithSecretProviderConfigs(paths, nil)
+func LoadPolicyStore(policyPaths []string, workloadPaths []string) (*PolicyStore, error) {
+	return LoadPolicyStoreWithSecretProviderConfigs(policyPaths, workloadPaths, nil)
 }
 
-func LoadPolicyStoreWithSecretProviderConfigs(paths []string, providerConfigPaths []string) (*PolicyStore, error) {
+func LoadPolicyStoreWithSecretProviderConfigs(policyPaths []string, workloadPaths []string, providerConfigPaths []string) (*PolicyStore, error) {
 	store := &PolicyStore{byWorkload: map[string]policy.CompiledPolicy{}}
 	providerConfigs, err := loadSecretProviderConfigs(providerConfigPaths)
 	if err != nil {
 		return nil, err
 	}
 
-	for _, path := range paths {
-		compiled, err := loadPolicy(path, providerConfigs)
+	policies, err := loadPolicies(policyPaths)
+	if err != nil {
+		return nil, err
+	}
+	workloads, err := loadWorkloads(workloadPaths)
+	if err != nil {
+		return nil, err
+	}
+	store.policies = append([]policy.AirlockPolicy(nil), policies...)
+	store.workloads = append([]policy.AirlockWorkload(nil), workloads...)
+
+	for _, workload := range workloads {
+		compiled, err := compileWorkload(workload, policies, providerConfigs)
 		if err != nil {
 			return nil, err
 		}
@@ -44,7 +57,15 @@ func LoadPolicyStoreWithSecretProviderConfigs(paths []string, providerConfigPath
 }
 
 func NewPolicyStoreFromCompiled(compiledPolicies []policy.CompiledPolicy) (*PolicyStore, error) {
-	store := &PolicyStore{byWorkload: map[string]policy.CompiledPolicy{}}
+	return NewPolicyStoreFromResources(nil, nil, compiledPolicies)
+}
+
+func NewPolicyStoreFromResources(policies []policy.AirlockPolicy, workloads []policy.AirlockWorkload, compiledPolicies []policy.CompiledPolicy) (*PolicyStore, error) {
+	store := &PolicyStore{
+		byWorkload: map[string]policy.CompiledPolicy{},
+		policies:   append([]policy.AirlockPolicy(nil), policies...),
+		workloads:  append([]policy.AirlockWorkload(nil), workloads...),
+	}
 	for _, compiled := range compiledPolicies {
 		key := compiled.Workload.SPIFFEID
 		if key == "" {
@@ -81,28 +102,79 @@ func (s *PolicyStore) Policies() []policy.CompiledPolicy {
 	return out
 }
 
-func loadPolicy(path string, providerConfigs map[string]policy.SecretProviderConfig) (policy.CompiledPolicy, error) {
+func (s *PolicyStore) AirlockPolicies() []policy.AirlockPolicy {
+	out := append([]policy.AirlockPolicy(nil), s.policies...)
+	sort.Slice(out, func(i int, j int) bool {
+		if out[i].Metadata.Namespace == out[j].Metadata.Namespace {
+			return out[i].Metadata.Name < out[j].Metadata.Name
+		}
+		return out[i].Metadata.Namespace < out[j].Metadata.Namespace
+	})
+	return out
+}
+
+func (s *PolicyStore) AirlockWorkloads() []policy.AirlockWorkload {
+	out := append([]policy.AirlockWorkload(nil), s.workloads...)
+	sort.Slice(out, func(i int, j int) bool {
+		if out[i].Metadata.Namespace == out[j].Metadata.Namespace {
+			return out[i].Metadata.Name < out[j].Metadata.Name
+		}
+		return out[i].Metadata.Namespace < out[j].Metadata.Namespace
+	})
+	return out
+}
+
+func loadPolicies(paths []string) ([]policy.AirlockPolicy, error) {
+	policies := make([]policy.AirlockPolicy, 0, len(paths))
+	for _, path := range paths {
+		input, err := loadPolicy(path)
+		if err != nil {
+			return nil, err
+		}
+		policies = append(policies, input)
+	}
+	return policies, nil
+}
+
+func loadPolicy(path string) (policy.AirlockPolicy, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return policy.CompiledPolicy{}, fmt.Errorf("read policy %q: %w", path, err)
+		return policy.AirlockPolicy{}, fmt.Errorf("read policy %q: %w", path, err)
 	}
 
 	var input policy.AirlockPolicy
 	if err := yaml.Unmarshal(data, &input); err != nil {
-		return policy.CompiledPolicy{}, fmt.Errorf("parse policy %q: %w", path, err)
+		return policy.AirlockPolicy{}, fmt.Errorf("parse policy %q: %w", path, err)
 	}
+	return input, nil
+}
 
-	providerConfig, err := resolveSecretProviderConfig(input, providerConfigs)
+func loadWorkloads(paths []string) ([]policy.AirlockWorkload, error) {
+	workloads := make([]policy.AirlockWorkload, 0, len(paths))
+	for _, path := range paths {
+		input, err := loadWorkload(path)
+		if err != nil {
+			return nil, err
+		}
+		workloads = append(workloads, input)
+	}
+	return workloads, nil
+}
+
+func loadWorkload(path string) (policy.AirlockWorkload, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return policy.CompiledPolicy{}, fmt.Errorf("resolve secret provider for policy %q: %w", path, err)
+		return policy.AirlockWorkload{}, fmt.Errorf("read workload %q: %w", path, err)
 	}
 
-	compiled, err := policy.CompileWithSecretProvider(input, providerConfig)
-	if err != nil {
-		return policy.CompiledPolicy{}, fmt.Errorf("compile policy %q: %w", path, err)
+	var input policy.AirlockWorkload
+	if err := yaml.Unmarshal(data, &input); err != nil {
+		return policy.AirlockWorkload{}, fmt.Errorf("parse workload %q: %w", path, err)
 	}
-
-	return compiled, nil
+	if err := policy.ValidateWorkload(input); err != nil {
+		return policy.AirlockWorkload{}, fmt.Errorf("validate workload %q: %w", path, err)
+	}
+	return input, nil
 }
 
 func loadSecretProviderConfigs(paths []string) (map[string]policy.SecretProviderConfig, error) {
@@ -128,7 +200,19 @@ func loadSecretProviderConfigs(paths []string) (map[string]policy.SecretProvider
 	return out, nil
 }
 
-func resolveSecretProviderConfig(input policy.AirlockPolicy, configs map[string]policy.SecretProviderConfig) (*policy.SecretProviderConfig, error) {
+func compileWorkload(input policy.AirlockWorkload, policies []policy.AirlockPolicy, providerConfigs map[string]policy.SecretProviderConfig) (policy.CompiledPolicy, error) {
+	providerConfig, err := resolveSecretProviderConfig(input, providerConfigs)
+	if err != nil {
+		return policy.CompiledPolicy{}, fmt.Errorf("resolve secret provider for workload %s/%s: %w", input.Metadata.Namespace, input.Metadata.Name, err)
+	}
+	compiled, err := policy.CompileWorkloadWithSecretProvider(input, policies, providerConfig)
+	if err != nil {
+		return policy.CompiledPolicy{}, fmt.Errorf("compile workload %s/%s: %w", input.Metadata.Namespace, input.Metadata.Name, err)
+	}
+	return compiled, nil
+}
+
+func resolveSecretProviderConfig(input policy.AirlockWorkload, configs map[string]policy.SecretProviderConfig) (*policy.SecretProviderConfig, error) {
 	ref := input.Spec.SecretProviderRef
 	if ref.Name == "" {
 		return nil, nil

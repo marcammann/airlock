@@ -1,0 +1,14 @@
+apiVersion: airlock.dev/v1alpha1
+kind: AirlockWorkload
+metadata:
+  name: code-agent
+  namespace: airlock-system
+spec:
+  secretProviderRef:
+    name: default-vault
+  workload:
+    spiffeId: spiffe://airlock.local/ns/demo/sa/code-agent/component/airlock-proxy-worker
+    namespace: demo
+    serviceAccount: code-agent
+  policyRefs:
+    - name: echo-upstream

@@ -1,11 +1,19 @@
 package policy
 
 type AirlockPolicy struct {
-	APIVersion string   `json:"apiVersion" yaml:"apiVersion"`
-	Kind       string   `json:"kind" yaml:"kind"`
-	Metadata   Metadata `json:"metadata" yaml:"metadata"`
-	Spec       Spec     `json:"spec" yaml:"spec"`
-	Status     Status   `json:"status,omitempty" yaml:"status,omitempty"`
+	APIVersion string     `json:"apiVersion" yaml:"apiVersion"`
+	Kind       string     `json:"kind" yaml:"kind"`
+	Metadata   Metadata   `json:"metadata" yaml:"metadata"`
+	Spec       PolicySpec `json:"spec" yaml:"spec"`
+	Status     Status     `json:"status,omitempty" yaml:"status,omitempty"`
+}
+
+type AirlockWorkload struct {
+	APIVersion string       `json:"apiVersion" yaml:"apiVersion"`
+	Kind       string       `json:"kind" yaml:"kind"`
+	Metadata   Metadata     `json:"metadata" yaml:"metadata"`
+	Spec       WorkloadSpec `json:"spec" yaml:"spec"`
+	Status     Status       `json:"status,omitempty" yaml:"status,omitempty"`
 }
 
 type Metadata struct {
@@ -15,15 +23,24 @@ type Metadata struct {
 	ResourceVersion string `json:"resourceVersion,omitempty" yaml:"resourceVersion,omitempty"`
 }
 
-type Spec struct {
+type PolicySpec struct {
+	Egress []EgressRule `json:"egress" yaml:"egress"`
+}
+
+type WorkloadSpec struct {
 	SecretProviderRef SecretProviderRef `json:"secretProviderRef,omitempty" yaml:"secretProviderRef"`
 	Workload          WorkloadIdentity  `json:"workload" yaml:"workload"`
-	Egress            []EgressRule      `json:"egress" yaml:"egress"`
+	PolicyRefs        []PolicyRef       `json:"policyRefs" yaml:"policyRefs"`
 }
 
 type SecretProviderRef struct {
 	Name      string `json:"name,omitempty" yaml:"name"`
 	Namespace string `json:"namespace,omitempty" yaml:"namespace"`
+}
+
+type PolicyRef struct {
+	Name      string `json:"name" yaml:"name"`
+	Namespace string `json:"namespace,omitempty" yaml:"namespace,omitempty"`
 }
 
 type WorkloadIdentity struct {
@@ -33,11 +50,12 @@ type WorkloadIdentity struct {
 }
 
 type EgressRule struct {
-	Name     string        `json:"name" yaml:"name"`
-	Scheme   string        `json:"scheme" yaml:"scheme"`
-	Host     string        `json:"host" yaml:"host"`
-	Port     uint32        `json:"port,omitempty" yaml:"port"`
-	Rewrites []RewriteRule `json:"rewrites,omitempty" yaml:"rewrites"`
+	Name         string        `json:"name" yaml:"name"`
+	Scheme       string        `json:"scheme" yaml:"scheme"`
+	Host         string        `json:"host" yaml:"host"`
+	Port         uint32        `json:"port,omitempty" yaml:"port"`
+	Rewrites     []RewriteRule `json:"rewrites,omitempty" yaml:"rewrites"`
+	SourcePolicy *PolicyRef    `json:"sourcePolicy,omitempty" yaml:"sourcePolicy,omitempty"`
 }
 
 type RewriteRule struct {
@@ -103,8 +121,9 @@ type VaultAuthSpec struct {
 }
 
 type VaultProviderDefaults struct {
-	Engine string `json:"engine,omitempty" yaml:"engine"`
-	Mount  string `json:"mount,omitempty" yaml:"mount"`
+	Engine     string `json:"engine,omitempty" yaml:"engine"`
+	Mount      string `json:"mount,omitempty" yaml:"mount"`
+	PathPrefix string `json:"pathPrefix,omitempty" yaml:"pathPrefix"`
 }
 
 type Status struct {

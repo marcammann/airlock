@@ -1,0 +1,31 @@
+version: airlock.dev/v1alpha1
+policyName: codex-openai-api
+workload:
+  spiffeId: spiffe://airlock.local/compose/codex/component/airlock-proxy-worker
+  namespace: compose
+  serviceAccount: codex-app-server
+egress:
+  - name: openai-api
+    scheme: https
+    host: api.openai.com
+    port: 443
+    sourcePolicy:
+      name: codex-openai-api
+  - name: codex-chatgpt
+    scheme: https
+    host: chatgpt.com
+    port: 443
+    sourcePolicy:
+      name: codex-openai-api
+  - name: openai-files
+    scheme: https
+    host: files.openai.com
+    port: 443
+    sourcePolicy:
+      name: codex-openai-api
+  - name: openai-auth
+    scheme: https
+    host: auth.openai.com
+    port: 443
+    sourcePolicy:
+      name: codex-openai-api

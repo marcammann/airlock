@@ -36,11 +36,14 @@ func LoadPolicyFile(path string) (CompiledPolicy, error) {
 	if err != nil {
 		return CompiledPolicy{}, err
 	}
-	var policy AirlockPolicy
+	var policy CompiledPolicy
 	if err := yaml.Unmarshal(data, &policy); err != nil {
 		return CompiledPolicy{}, err
 	}
-	return Compile(policy)
+	if err := ValidateCompiledPolicy(policy); err != nil {
+		return CompiledPolicy{}, err
+	}
+	return policy, nil
 }
 
 type ControlPlanePolicyProvider struct {
@@ -81,30 +84,13 @@ func (p ControlPlanePolicyProvider) LoadSPIFFEMTLS(ctx context.Context, serverSP
 	if target.Scheme != "https" {
 		return CompiledPolicy{}, fmt.Errorf("SPIFFE control-plane auth requires an https:// control-plane URL")
 	}
-	serverID, err := spiffeid.FromString(serverSPIFFEID)
-	if err != nil {
-		return CompiledPolicy{}, fmt.Errorf("parse control-plane SPIFFE ID: %w", err)
-	}
 	fmt.Fprintf(os.Stderr, "airlock-proxy-worker spiffe: requesting policy workload=%s control_plane_url=%s expected_server_id=%s\n", p.workloadIdentity, p.baseURL, serverSPIFFEID)
-	var opts []workloadapi.X509SourceOption
-	if strings.TrimSpace(spiffeSocket) != "" {
-		opts = append(opts, workloadapi.WithClientOptions(workloadapi.WithAddr(spiffeSocket)))
-	}
-	source, err := workloadapi.NewX509Source(ctx, opts...)
+	client, source, err := NewSPIFFEMTLSHTTPClient(ctx, serverSPIFFEID, spiffeSocket, 15*time.Second)
 	if err != nil {
-		return CompiledPolicy{}, fmt.Errorf("create SPIFFE X509 source: %w", err)
+		return CompiledPolicy{}, err
 	}
 	defer source.Close()
-	if svid, err := source.GetX509SVID(); err == nil {
-		fmt.Fprintf(os.Stderr, "airlock-proxy-worker spiffe: selected_x509_svid=%s chain_len=%d source_initial_sync=complete\n", svid.ID, len(svid.Certificates))
-	}
 
-	client := &http.Client{
-		Timeout: 15 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: tlsconfig.MTLSClientConfig(source, source, tlsconfig.AuthorizeID(serverID)),
-		},
-	}
 	requestURL := strings.TrimRight(p.baseURL, "/") + "/v1/policies/" + percentEncodePathSegment(p.workloadIdentity)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
@@ -130,6 +116,34 @@ func (p ControlPlanePolicyProvider) LoadSPIFFEMTLS(ctx context.Context, serverSP
 		return CompiledPolicy{}, err
 	}
 	return policy, nil
+}
+
+func NewSPIFFEMTLSHTTPClient(ctx context.Context, serverSPIFFEID, spiffeSocket string, timeout time.Duration) (*http.Client, io.Closer, error) {
+	serverID, err := spiffeid.FromString(serverSPIFFEID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse control-plane SPIFFE ID: %w", err)
+	}
+	var opts []workloadapi.X509SourceOption
+	if strings.TrimSpace(spiffeSocket) != "" {
+		opts = append(opts, workloadapi.WithClientOptions(workloadapi.WithAddr(spiffeSocket)))
+	}
+	source, err := workloadapi.NewX509Source(ctx, opts...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create SPIFFE X509 source: %w", err)
+	}
+	if svid, err := source.GetX509SVID(); err == nil {
+		fmt.Fprintf(os.Stderr, "airlock-proxy-worker spiffe: selected_x509_svid=%s chain_len=%d source_initial_sync=complete\n", svid.ID, len(svid.Certificates))
+	}
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	client := &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			TLSClientConfig: tlsconfig.MTLSClientConfig(source, source, tlsconfig.AuthorizeID(serverID)),
+		},
+	}
+	return client, source, nil
 }
 
 func percentEncodePathSegment(value string) string {

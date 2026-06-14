@@ -58,7 +58,7 @@ func ReconcileSPIRE(ctx context.Context, store *PolicyStore, opts SPIREReconcile
 	var result SPIREReconcileResult
 	desired := map[string]struct{}{}
 	for _, compiled := range store.Policies() {
-		object, err := clusterSPIFFEIDForPolicy(compiled, opts)
+		object, err := clusterSPIFFEIDForWorkload(compiled, opts)
 		if err != nil {
 			return result, err
 		}
@@ -72,7 +72,7 @@ func ReconcileSPIRE(ctx context.Context, store *PolicyStore, opts SPIREReconcile
 			"ts":                  time.Now().UTC().Format(time.RFC3339Nano),
 			"event":               "spire_reconcile",
 			"outcome":             "applied",
-			"policyName":          compiled.PolicyName,
+			"workloadName":        compiled.PolicyName,
 			"clusterSPIFFEID":     object.Metadata.Name,
 			"workloadIdentity":    compiled.Workload.SPIFFEID,
 			"workloadNamespace":   compiled.Workload.Namespace,
@@ -114,14 +114,14 @@ type labelSelector struct {
 	MatchLabels map[string]string `json:"matchLabels"`
 }
 
-func clusterSPIFFEIDForPolicy(compiled policy.CompiledPolicy, opts SPIREReconcileOptions) (clusterSPIFFEID, error) {
+func clusterSPIFFEIDForWorkload(compiled policy.CompiledPolicy, opts SPIREReconcileOptions) (clusterSPIFFEID, error) {
 	workloadNamespace := strings.TrimSpace(compiled.Workload.Namespace)
 	if workloadNamespace == "" {
-		return clusterSPIFFEID{}, fmt.Errorf("policy %q has empty workload namespace", compiled.PolicyName)
+		return clusterSPIFFEID{}, fmt.Errorf("workload %q has empty workload namespace", compiled.PolicyName)
 	}
 	workloadIdentity := strings.TrimSpace(compiled.Workload.SPIFFEID)
 	if workloadIdentity == "" {
-		return clusterSPIFFEID{}, fmt.Errorf("policy %q has empty workload SPIFFE ID", compiled.PolicyName)
+		return clusterSPIFFEID{}, fmt.Errorf("workload %q has empty workload SPIFFE ID", compiled.PolicyName)
 	}
 
 	name := "airlock-" + dnsLabelPart(compiled.PolicyName)
@@ -133,7 +133,7 @@ func clusterSPIFFEIDForPolicy(compiled policy.CompiledPolicy, opts SPIREReconcil
 			Labels: map[string]string{
 				"app.kubernetes.io/name":    "airlock-control-plane",
 				"app.kubernetes.io/part-of": "airlock",
-				"airlock.dev/policy-name":   compiled.PolicyName,
+				"airlock.dev/workload-name": compiled.PolicyName,
 				"airlock.dev/managed-by":    "airlock-control-plane",
 			},
 		},

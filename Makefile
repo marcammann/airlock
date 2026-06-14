@@ -1,14 +1,14 @@
 KIND_CLUSTER ?= airlock
 KIND_CONFIG ?= deploy/kind/airlock.yaml
 KUSTOMIZE_DIR ?= deploy/k8s
+EXAMPLES_K8S_DIR ?= examples/k8s
 SPIFFE_HELM_REPO ?= https://spiffe.github.io/helm-charts-hardened
 SPIRE_VALUES ?= deploy/helm/spire/values.yaml
 CONTROL_PLANE_IMAGE ?= airlock-control-plane:dev
 PROXY_WORKER_IMAGE ?= airlock-proxy-worker:dev
-PROXY_WORKER_RS_IMAGE ?= airlock-proxy-worker-rs:dev
 WEB_UI_IMAGE ?= airlock-web-ui:dev
 
-.PHONY: kind-up kind-down build-control-plane-image load-control-plane-image build-proxy-worker-image load-proxy-worker-image build-web-ui-image build-images load-images test-proxy-worker build-proxy-worker proxy-worker-local-smoke test-go-proxy-worker build-go-proxy-worker build-go-proxy-worker-image go-proxy-worker-local-smoke build-proxy-worker-rs-image test-proxy-worker-rs test-web-ui web-ui-dev install-spire install-vault install-airlock deploy-demo install-baseline demo-smoke local-control-plane-smoke spiffe-policy-smoke vault-jwt-setup k8s-egress-smoke injected-sidecar-smoke existing-envoy-smoke single-local-smoke security-smoke fail-closed-smoke fail-closed-k8s-smoke tls-termination-smoke envoy-sds-tls-smoke envoy-connect-sds-smoke github-connect-sds-smoke compose-git-demo compose-git-envoy-demo compose-git-no-control-plane-demo compose-git-clean opencode-headless-up opencode-headless-attach opencode-headless-logs opencode-headless-down opencode-headless-clean codex-app-server-up codex-app-server-connect codex-app-server-logs codex-app-server-down codex-app-server-clean test-e2e demo test
+.PHONY: kind-up kind-down build-control-plane-image load-control-plane-image build-proxy-worker-image load-proxy-worker-image build-web-ui-image build-images load-images test-proxy-worker build-proxy-worker proxy-worker-local-smoke test-go-proxy-worker build-go-proxy-worker build-go-proxy-worker-image go-proxy-worker-local-smoke test-web-ui web-ui-dev install-spire install-vault install-airlock deploy-demo install-baseline demo-smoke local-control-plane-smoke spiffe-policy-smoke vault-jwt-setup k8s-egress-smoke injected-sidecar-smoke existing-envoy-smoke single-local-smoke security-smoke fail-closed-smoke fail-closed-k8s-smoke tls-termination-smoke envoy-sds-tls-smoke envoy-connect-sds-smoke github-connect-sds-smoke compose-git-demo compose-git-envoy-demo compose-git-no-control-plane-demo compose-git-clean compose-proxy-observability-up compose-proxy-observability-logs compose-proxy-observability-down compose-proxy-observability-clean opencode-headless-up opencode-headless-attach opencode-headless-logs opencode-headless-down opencode-headless-clean codex-app-server-up codex-app-server-connect codex-app-server-logs codex-app-server-down codex-app-server-clean test-e2e demo test
 
 kind-up:
 	kind create cluster --name $(KIND_CLUSTER) --config $(KIND_CONFIG)
@@ -53,12 +53,6 @@ build-go-proxy-worker-image: build-proxy-worker-image
 
 go-proxy-worker-local-smoke: proxy-worker-local-smoke
 
-build-proxy-worker-rs-image:
-	docker build -f proxy-worker-rs/Dockerfile -t $(PROXY_WORKER_RS_IMAGE) .
-
-test-proxy-worker-rs:
-	cd proxy-worker-rs && cargo test --workspace
-
 test-web-ui:
 	cd web-ui && npm run lint && npm run build
 
@@ -82,8 +76,10 @@ install-airlock: build-control-plane-image load-control-plane-image
 	kubectl apply -f $(KUSTOMIZE_DIR)/namespaces.yaml
 	kubectl apply -f $(KUSTOMIZE_DIR)/crds/airlock.dev_secretproviderconfigs.yaml
 	kubectl apply -f $(KUSTOMIZE_DIR)/crds/airlock.dev_airlockpolicies.yaml
+	kubectl apply -f $(KUSTOMIZE_DIR)/crds/airlock.dev_airlockworkloads.yaml
 	kubectl wait --for=condition=Established crd/secretproviderconfigs.airlock.dev --timeout=60s
 	kubectl wait --for=condition=Established crd/airlockpolicies.airlock.dev --timeout=60s
+	kubectl wait --for=condition=Established crd/airlockworkloads.airlock.dev --timeout=60s
 	$(MAKE) install-spire
 	kubectl apply -f $(KUSTOMIZE_DIR)/spire-system/airlock-spiffe-ids.yaml
 	kubectl apply -f $(KUSTOMIZE_DIR)/airlock-system/control-plane-rbac.yaml
@@ -95,14 +91,11 @@ install-airlock: build-control-plane-image load-control-plane-image
 deploy-demo: build-proxy-worker-image load-proxy-worker-image install-vault
 	kubectl apply -f $(KUSTOMIZE_DIR)/crds/airlock.dev_secretproviderconfigs.yaml
 	kubectl apply -f $(KUSTOMIZE_DIR)/crds/airlock.dev_airlockpolicies.yaml
+	kubectl apply -f $(KUSTOMIZE_DIR)/crds/airlock.dev_airlockworkloads.yaml
 	kubectl wait --for=condition=Established crd/secretproviderconfigs.airlock.dev --timeout=60s
 	kubectl wait --for=condition=Established crd/airlockpolicies.airlock.dev --timeout=60s
-	kubectl apply -f $(KUSTOMIZE_DIR)/airlock-system/secret-provider-configs/default-vault.yaml
-	kubectl apply -f $(KUSTOMIZE_DIR)/airlock-system/policies/code-agent.yaml
-	kubectl apply -f $(KUSTOMIZE_DIR)/demo/envoy-config.yaml
-	kubectl apply -f $(KUSTOMIZE_DIR)/demo/echo-upstream.yaml
-	kubectl apply -f $(KUSTOMIZE_DIR)/demo/proxy-worker.yaml
-	kubectl apply -f $(KUSTOMIZE_DIR)/demo/code-agent.yaml
+	kubectl wait --for=condition=Established crd/airlockworkloads.airlock.dev --timeout=60s
+	kubectl apply -k $(EXAMPLES_K8S_DIR)/basic-egress
 	kubectl rollout status deployment/airlock-proxy-worker -n demo --timeout=180s
 	kubectl rollout status deployment/echo-upstream -n demo --timeout=120s
 	kubectl rollout status deployment/code-agent -n demo --timeout=120s
@@ -126,10 +119,10 @@ k8s-egress-smoke:
 	./scripts/k8s-egress-smoke.sh
 
 injected-sidecar-smoke:
-	SMOKE_NAME=injected-sidecar WORKLOAD_DEPLOYMENT=code-agent-injected WORKLOAD_LABEL=app.kubernetes.io/name=code-agent-injected WORKLOAD_MANIFEST=deploy/k8s/demo/code-agent-injected.yaml ./scripts/k8s-egress-smoke.sh
+	SMOKE_NAME=injected-sidecar WORKLOAD_DEPLOYMENT=code-agent-injected WORKLOAD_LABEL=app.kubernetes.io/name=code-agent-injected WORKLOAD_MANIFEST=$(EXAMPLES_K8S_DIR)/injected-sidecar/code-agent-injected.yaml ./scripts/k8s-egress-smoke.sh
 
 existing-envoy-smoke:
-	SMOKE_NAME=existing-envoy WORKLOAD_DEPLOYMENT=code-agent-existing-envoy WORKLOAD_LABEL=app.kubernetes.io/name=code-agent-existing-envoy WORKLOAD_MANIFEST=deploy/k8s/demo/code-agent-existing-envoy.yaml ALLOW_SOURCE_ENVOY=true ./scripts/k8s-egress-smoke.sh
+	SMOKE_NAME=existing-envoy WORKLOAD_DEPLOYMENT=code-agent-existing-envoy WORKLOAD_LABEL=app.kubernetes.io/name=code-agent-existing-envoy WORKLOAD_MANIFEST=$(EXAMPLES_K8S_DIR)/existing-envoy/code-agent-existing-envoy.yaml ALLOW_SOURCE_ENVOY=true ./scripts/k8s-egress-smoke.sh
 
 single-local-smoke:
 	./scripts/single-local-smoke.sh
@@ -156,48 +149,60 @@ github-connect-sds-smoke:
 	./scripts/github-connect-sds-smoke.sh
 
 compose-git-demo:
-	docker compose -f examples/docker-compose-git/compose.yaml up --build --abort-on-container-exit --exit-code-from git-app
+	docker compose -f examples/compose/git/compose.yaml up --build --abort-on-container-exit --exit-code-from git-app
 
 compose-git-envoy-demo:
-	docker compose -f examples/docker-compose-git/compose.envoy.yaml up --build --abort-on-container-exit --exit-code-from git-app
+	docker compose -f examples/compose/git/compose.envoy.yaml up --build --abort-on-container-exit --exit-code-from git-app
 
 compose-git-no-control-plane-demo:
-	docker compose -f examples/docker-compose-git/compose.no-control-plane.yaml up --build --abort-on-container-exit --exit-code-from git-app
+	docker compose -f examples/compose/git/compose.no-control-plane.yaml up --build --abort-on-container-exit --exit-code-from git-app
 
 compose-git-clean:
-	docker compose -f examples/docker-compose-git/compose.yaml down -v
-	docker compose -f examples/docker-compose-git/compose.envoy.yaml down -v
-	docker compose -f examples/docker-compose-git/compose.no-control-plane.yaml down -v
+	docker compose -f examples/compose/git/compose.yaml down -v
+	docker compose -f examples/compose/git/compose.envoy.yaml down -v
+	docker compose -f examples/compose/git/compose.no-control-plane.yaml down -v
+
+compose-proxy-observability-up:
+	docker compose -f examples/compose/proxy-observability/compose.yaml up -d --build
+
+compose-proxy-observability-logs:
+	docker compose -f examples/compose/proxy-observability/compose.yaml logs -f proxy-worker control-plane web-ui client
+
+compose-proxy-observability-down:
+	docker compose -f examples/compose/proxy-observability/compose.yaml down
+
+compose-proxy-observability-clean:
+	docker compose -f examples/compose/proxy-observability/compose.yaml down -v
 
 opencode-headless-up:
-	docker compose -f examples/opencode-headless/compose.yaml up -d
+	docker compose -f examples/compose/opencode-headless/compose.yaml up -d
 
 opencode-headless-attach:
 	opencode attach http://localhost:$${OPENCODE_PORT:-4096} --dir /workspace --username $${OPENCODE_SERVER_USERNAME:-opencode} --password $${OPENCODE_SERVER_PASSWORD:-opencode-local}
 
 opencode-headless-logs:
-	docker compose -f examples/opencode-headless/compose.yaml logs -f opencode-server
+	docker compose -f examples/compose/opencode-headless/compose.yaml logs -f opencode-server
 
 opencode-headless-down:
-	docker compose -f examples/opencode-headless/compose.yaml down
+	docker compose -f examples/compose/opencode-headless/compose.yaml down
 
 opencode-headless-clean:
-	docker compose -f examples/opencode-headless/compose.yaml down -v
+	docker compose -f examples/compose/opencode-headless/compose.yaml down -v
 
 codex-app-server-up:
-	docker compose -f examples/codex-app-server/compose.yaml up -d --build
+	docker compose -f examples/compose/codex-app-server/compose.yaml up -d --build
 
 codex-app-server-connect:
-	CODEX_REMOTE_AUTH_TOKEN=$$(cat examples/codex-app-server/secrets/ws-token) codex --remote ws://127.0.0.1:$${CODEX_APP_SERVER_PORT:-4100} --remote-auth-token-env CODEX_REMOTE_AUTH_TOKEN
+	CODEX_REMOTE_AUTH_TOKEN=$$(cat examples/compose/codex-app-server/secrets/ws-token) codex --remote ws://127.0.0.1:$${CODEX_APP_SERVER_PORT:-4100} --remote-auth-token-env CODEX_REMOTE_AUTH_TOKEN
 
 codex-app-server-logs:
-	docker compose -f examples/codex-app-server/compose.yaml logs -f codex-app-server
+	docker compose -f examples/compose/codex-app-server/compose.yaml logs -f codex-app-server
 
 codex-app-server-down:
-	docker compose -f examples/codex-app-server/compose.yaml down
+	docker compose -f examples/compose/codex-app-server/compose.yaml down
 
 codex-app-server-clean:
-	docker compose -f examples/codex-app-server/compose.yaml down -v
+	docker compose -f examples/compose/codex-app-server/compose.yaml down -v
 
 test-e2e: demo-smoke vault-jwt-setup k8s-egress-smoke injected-sidecar-smoke existing-envoy-smoke security-smoke
 
@@ -208,4 +213,3 @@ demo: kind-up
 test:
 	cd control-plane && go test ./...
 	cd proxy-worker && go test ./...
-	cd proxy-worker-rs && cargo test --workspace

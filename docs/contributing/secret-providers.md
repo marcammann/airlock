@@ -79,3 +79,8 @@ Remote example:
 
 - `vault`: configured through the compiled secret provider config, with
   per-reference `mount`, `engine`, `path`, and `key` coordinates.
+
+Vault `SecretProviderConfig` can provide defaults for `mount`, `engine`, and
+`pathPrefix`. The prefix is applied by the control plane during compilation, so
+policies can use logical paths while each namespace/environment maps them to its
+own Vault layout.

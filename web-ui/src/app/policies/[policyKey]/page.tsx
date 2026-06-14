@@ -1,6 +1,6 @@
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { destinationLabel, getPolicyByKey } from "@/lib/airlock";
+import { requirePagePermission } from "@/lib/auth";
 import type { ReactNode } from "react";
 
 type PolicyDetailPageProps = {
@@ -9,9 +9,9 @@ type PolicyDetailPageProps = {
   }>;
 };
 
-export default async function PolicyDetailPage({
-  params,
-}: PolicyDetailPageProps) {
+export default async function PolicyDetailPage({ params }: PolicyDetailPageProps) {
+  await requirePagePermission("admin:read");
+
   const { policyKey } = await params;
   const result = await getPolicyByKey(policyKey);
 
@@ -20,12 +20,9 @@ export default async function PolicyDetailPage({
       notFound();
     }
     return (
-      <main className="min-h-screen px-6 py-8 text-slate-950 sm:px-8">
+      <main className="px-6 pb-12 pt-9 text-slate-950 sm:px-8 lg:px-[72px]">
         <section className="mx-auto max-w-6xl">
-          <Link href="/" className="text-sm font-medium text-teal-700 hover:underline">
-            Policies
-          </Link>
-          <div className="mt-6 border border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-950">
+          <div className="border border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-950">
             {result.error}
           </div>
         </section>
@@ -36,20 +33,17 @@ export default async function PolicyDetailPage({
   const { policy, source } = result.data;
 
   return (
-    <main className="min-h-screen px-6 py-8 text-slate-950 sm:px-8">
+    <main className="px-6 pb-12 pt-9 text-slate-950 sm:px-8 lg:px-[72px]">
       <section className="mx-auto flex max-w-7xl flex-col gap-6">
         <header className="border-b border-slate-200 pb-6">
-          <Link href="/" className="text-sm font-medium text-teal-700 hover:underline">
-            Policies
-          </Link>
-          <div className="mt-5 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <p className="text-sm font-semibold uppercase tracking-wide text-teal-700">
                 Policy
               </p>
               <h1 className="mt-2 text-3xl font-semibold">{policy.name}</h1>
-              <p className="mt-2 font-mono text-xs text-slate-500">
-                {policy.workload.spiffeId || "unassigned"}
+              <p className="mt-2 text-sm text-slate-500">
+                {policy.namespace || "default"}
               </p>
             </div>
             <div className="grid grid-cols-3 gap-3 text-sm">
@@ -102,27 +96,10 @@ export default async function PolicyDetailPage({
           </div>
 
           <aside className="flex flex-col gap-4">
-            <InfoPanel title="Workload">
-              <InfoRow label="Namespace" value={policy.workload.namespace || "-"} />
-              <InfoRow
-                label="Service account"
-                value={policy.workload.serviceAccount || "-"}
-              />
-              <InfoRow label="SPIFFE ID" value={policy.workload.spiffeId || "-"} mono />
-            </InfoPanel>
-
             <InfoPanel title="Management">
               <InfoRow label="Managed by" value={policy.managedBy} />
               <InfoRow label="Source" value={policy.source} />
               <InfoRow label="Control plane" value={source} mono />
-            </InfoPanel>
-
-            <InfoPanel title="Secrets">
-              <InfoRow
-                label="Provider"
-                value={policy.secretProvider?.provider || "none"}
-              />
-              <InfoRow label="Rewrite metadata" value="redacted" />
             </InfoPanel>
           </aside>
         </section>

@@ -73,15 +73,15 @@ for attempt in $(seq 1 30); do
 done
 
 (
-  cd "$ROOT_DIR/proxy-worker-rs"
-  AIRLOCK_TEST_TOKEN=single-local-token cargo run -p airlock-proxy-worker -- \
+  cd "$ROOT_DIR/proxy-worker"
+  AIRLOCK_TEST_TOKEN=single-local-token go run ./cmd/airlock-proxy-worker \
+    --proxy http:builtin@127.0.0.1:18080 \
     --no-control-plane \
-    --policy ../fixtures/policies/local-http.yaml \
-    --listen 127.0.0.1:18080
+    --policy ../fixtures/compiled/local-http.yaml
 ) >"$PROXY_LOG" 2>&1 &
 PROXY_PID="$!"
 
-wait_for_log "$PROXY_LOG" "proxy_type=builtin control_plane=disabled"
+wait_for_log "$PROXY_LOG" "proxy=http:builtin control_plane=false"
 wait_for_log "$PROXY_LOG" "builtin proxy listening on 127.0.0.1:18080"
 
 curl -fsS --max-time 10 --noproxy "" --proxy http://127.0.0.1:18080 \

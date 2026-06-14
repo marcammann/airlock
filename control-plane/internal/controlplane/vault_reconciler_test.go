@@ -13,6 +13,7 @@ import (
 func TestReconcileVaultWritesACLPolicyAndJWTRole(t *testing.T) {
 	store, err := LoadPolicyStoreWithSecretProviderConfigs(
 		[]string{filepath.Join("..", "..", "..", "fixtures", "policies", "valid-vault-provider-ref.yaml")},
+		[]string{filepath.Join("..", "..", "..", "fixtures", "workloads", "code-agent-vault.yaml")},
 		[]string{filepath.Join("..", "..", "..", "fixtures", "secret-provider-configs", "default-vault.yaml")},
 	)
 	if err != nil {
@@ -80,7 +81,10 @@ func TestReconcileVaultWritesACLPolicyAndJWTRole(t *testing.T) {
 }
 
 func TestReconcileVaultRequiresAdminToken(t *testing.T) {
-	store, err := LoadPolicyStore([]string{filepath.Join("..", "..", "..", "fixtures", "policies", "valid.yaml")})
+	store, err := LoadPolicyStore(
+		[]string{filepath.Join("..", "..", "..", "fixtures", "policies", "valid.yaml")},
+		[]string{filepath.Join("..", "..", "..", "fixtures", "workloads", "code-agent.yaml")},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

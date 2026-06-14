@@ -7,10 +7,10 @@ metadata:
     app.kubernetes.io/part-of: airlock
 rules:
   - apiGroups: ["airlock.dev"]
-    resources: ["airlockpolicies", "secretproviderconfigs"]
+    resources: ["airlockpolicies", "airlockworkloads", "secretproviderconfigs"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["airlock.dev"]
-    resources: ["airlockpolicies/status"]
+    resources: ["airlockworkloads/status"]
     verbs: ["get", "patch", "update"]
   - apiGroups: ["spire.spiffe.io"]
     resources: ["clusterspiffeids"]

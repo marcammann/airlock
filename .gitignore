@@ -1,6 +1,9 @@
-target/
-proxy-worker-rs/target/
+# OS metadata
+.DS_Store
+._*
+Thumbs.db
+desktop.ini
+
 .cache/
 dist/
 .env
-.archive

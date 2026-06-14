@@ -1,12 +1,9 @@
 apiVersion: airlock.dev/v1alpha1
 kind: AirlockPolicy
 metadata:
-  name: code-agent
+  name: openai-api
+  namespace: airlock-system
 spec:
-  workload:
-    spiffeId: spiffe://airlock.local/ns/demo/sa/code-agent/component/airlock-proxy-worker
-    namespace: demo
-    serviceAccount: code-agent
   egress:
     - name: openai-api
       scheme: https
@@ -20,4 +17,3 @@ spec:
             provider: env
             name: test-token
             env: AIRLOCK_TEST_TOKEN
-

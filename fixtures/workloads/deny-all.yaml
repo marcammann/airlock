@@ -1,0 +1,11 @@
+apiVersion: airlock.dev/v1alpha1
+kind: AirlockWorkload
+metadata:
+  name: deny-all
+  namespace: airlock-system
+spec:
+  workload:
+    spiffeId: spiffe://airlock.local/compose/opencode/component/airlock-proxy-worker
+  policyRefs:
+    - name: deny-all
+

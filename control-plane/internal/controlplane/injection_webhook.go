@@ -10,7 +10,7 @@ import (
 
 const (
 	InjectionEnabledAnnotation   = "airlock.dev/enabled"
-	InjectionPolicyAnnotation    = "airlock.dev/policy"
+	InjectionWorkloadAnnotation  = "airlock.dev/workload"
 	InjectionEnvoyModeAnnotation = "airlock.dev/envoy-mode"
 	EnvoyModeManaged             = "managed"
 	EnvoyModeExisting            = "existing"
@@ -200,10 +200,10 @@ func mutatePod(request *admissionRequest, server *Server, opts InjectionOptions)
 	workloadIdentity := fmt.Sprintf("spiffe://%s/ns/%s/sa/%s/component/airlock-proxy-worker", opts.TrustDomain, namespace, serviceAccountName)
 	compiled, ok := server.getPolicy(workloadIdentity)
 	if !ok {
-		return denyAdmission(request.UID, "no Airlock policy for workload identity "+workloadIdentity)
+		return denyAdmission(request.UID, "no Airlock workload for workload identity "+workloadIdentity)
 	}
-	if policyName := strings.TrimSpace(pod.Metadata.Annotations[InjectionPolicyAnnotation]); policyName != "" && policyName != compiled.PolicyName {
-		return denyAdmission(request.UID, fmt.Sprintf("annotation %s=%q does not match policy %q for workload identity", InjectionPolicyAnnotation, policyName, compiled.PolicyName))
+	if workloadName := strings.TrimSpace(pod.Metadata.Annotations[InjectionWorkloadAnnotation]); workloadName != "" && workloadName != compiled.PolicyName {
+		return denyAdmission(request.UID, fmt.Sprintf("annotation %s=%q does not match AirlockWorkload %q for workload identity", InjectionWorkloadAnnotation, workloadName, compiled.PolicyName))
 	}
 
 	patch := injectionPatch(pod, opts, workloadIdentity, envoyMode)
@@ -389,6 +389,14 @@ func proxyWorkerContainer(opts InjectionOptions, workloadIdentity string) map[st
 		"ports": []map[string]any{{
 			"name":          "ext-proc",
 			"containerPort": opts.ExtProcPort,
+		}},
+		"env": []map[string]any{{
+			"name": "POD_IP",
+			"valueFrom": map[string]any{
+				"fieldRef": map[string]any{
+					"fieldPath": "status.podIP",
+				},
+			},
 		}},
 		"volumeMounts": []map[string]any{{
 			"name":      "spire-agent-socket",

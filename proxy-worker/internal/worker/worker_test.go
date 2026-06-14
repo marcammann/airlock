@@ -2,6 +2,7 @@ package worker
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -102,6 +103,231 @@ func TestDeniedRequestFailsClosedBeforeConnectingUpstream(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(log.Entries(), "\n"), "denied request") {
 		t.Fatalf("logs = %q, want denied request", log.Entries())
+	}
+}
+
+func TestEventLogSnapshotCountsDecisions(t *testing.T) {
+	log := NewMemoryEventLog()
+
+	log.Record("allowed request method=GET upstream=https://allowed.test path=/v1")
+	log.Record("denied request method=GET upstream=https://denied.test reason=no_matching_egress")
+	log.Record("denied request method=GET upstream=https://secret.test dependency=secret reason=missing")
+
+	snapshot := log.Snapshot()
+	if snapshot.Allowed != 1 || snapshot.Denied != 1 || snapshot.ProxyError != 1 {
+		t.Fatalf("snapshot = %+v, want allowed=1 denied=1 proxyError=1", snapshot)
+	}
+	if snapshot.LastDecisionAt == nil {
+		t.Fatal("LastDecisionAt is nil, want decision timestamp")
+	}
+	if len(snapshot.DecisionEvents) != 3 {
+		t.Fatalf("DecisionEvents = %d, want 3", len(snapshot.DecisionEvents))
+	}
+	if snapshot.DecisionEvents[0].Decision != "allowed" ||
+		snapshot.DecisionEvents[1].Decision != "denied" ||
+		snapshot.DecisionEvents[2].Decision != "proxy_error" {
+		t.Fatalf("DecisionEvents = %+v, want allowed/denied/proxy_error", snapshot.DecisionEvents)
+	}
+}
+
+func TestHeartbeatReporterPostsProxyStatus(t *testing.T) {
+	t.Setenv("POD_NAMESPACE", "demo")
+	t.Setenv("POD_NAME", "code-agent-123")
+	log := NewMemoryEventLog()
+	log.Record("allowed request method=GET upstream=https://github.com path=/owner/repo.git")
+	policyFetchedAt := time.Now().UTC()
+	processStartedAt := policyFetchedAt.Add(-time.Minute)
+	received := make(chan proxyHeartbeatPayload, 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/proxies/heartbeat" {
+			t.Errorf("request = %s %s, want POST /v1/proxies/heartbeat", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer dev-token" {
+			t.Errorf("Authorization = %q, want bearer dev-token", got)
+		}
+		var payload proxyHeartbeatPayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode heartbeat: %v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		received <- payload
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	reporter, err := NewHeartbeatReporter(HeartbeatReporterOptions{
+		BaseURL:           server.URL,
+		DevToken:          "dev-token",
+		ProxyID:           "proxy-1",
+		ProxyType:         "http:builtin",
+		WorkloadIdentity:  testWorkloadIdentity,
+		WorkloadName:      "test-policy",
+		EffectiveVersion:  "airlock.dev/v1alpha1",
+		PolicyFetchedAt:   &policyFetchedAt,
+		HeartbeatInterval: 10 * time.Second,
+		ProcessStartedAt:  processStartedAt,
+		Log:               log,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reporter.Report(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	var payload proxyHeartbeatPayload
+	select {
+	case payload = <-received:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for heartbeat")
+	}
+	if payload.ID != "proxy-1" || payload.WorkloadIdentity != testWorkloadIdentity || payload.ProxyType != "http:builtin" {
+		t.Fatalf("payload identity = %+v, want proxy-1 test identity http:builtin", payload)
+	}
+	if payload.WorkloadName != "test-policy" || payload.EffectiveVersion != "airlock.dev/v1alpha1" {
+		t.Fatalf("payload workload = %+v, want test-policy airlock.dev/v1alpha1", payload)
+	}
+	if payload.PodNamespace != "demo" || payload.PodName != "code-agent-123" {
+		t.Fatalf("pod = %s/%s, want demo/code-agent-123", payload.PodNamespace, payload.PodName)
+	}
+	if !payload.PolicyFetched || payload.LastPolicyFetchAt == nil || payload.ProcessStartedAt == nil || payload.LastDecisionAt == nil {
+		t.Fatalf("payload timestamps = %+v, want policy/process/decision timestamps", payload)
+	}
+	if payload.HeartbeatInterval != "10s" {
+		t.Fatalf("heartbeatInterval = %q, want 10s", payload.HeartbeatInterval)
+	}
+	if payload.Decisions.Allowed != 1 || payload.Decisions.Denied != 0 || payload.Decisions.ProxyError != 0 {
+		t.Fatalf("decisions = %+v, want one allowed decision", payload.Decisions)
+	}
+}
+
+func TestHeartbeatReporterRunsOnInterval(t *testing.T) {
+	requests := make(chan struct{}, 3)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	reporter, err := NewHeartbeatReporter(HeartbeatReporterOptions{
+		BaseURL:           server.URL,
+		ProxyID:           "proxy-1",
+		ProxyType:         "http:builtin",
+		WorkloadIdentity:  testWorkloadIdentity,
+		WorkloadName:      "test-policy",
+		EffectiveVersion:  "airlock.dev/v1alpha1",
+		HeartbeatInterval: 20 * time.Millisecond,
+		Log:               NewMemoryEventLog(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go reporter.Run(ctx)
+
+	for i := 0; i < 3; i++ {
+		select {
+		case <-requests:
+		case <-time.After(500 * time.Millisecond):
+			t.Fatalf("timed out waiting for heartbeat %d", i+1)
+		}
+	}
+}
+
+func TestEventReporterPostsAggregatedDeniedEvent(t *testing.T) {
+	received := make(chan eventReportPayload, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/events" {
+			t.Errorf("request = %s %s, want POST /v1/events", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer dev-token" {
+			t.Errorf("Authorization = %q, want bearer dev-token", got)
+		}
+		var payload eventReportPayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode event payload: %v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		received <- payload
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	reporter, err := NewEventReporter(EventReporterOptions{
+		Endpoint:          server.URL + "/v1/events",
+		DevToken:          "dev-token",
+		ProxyID:           "10.42.0.17",
+		ProxyType:         "http:builtin",
+		WorkloadIdentity:  testWorkloadIdentity,
+		WorkloadName:      "test-workload",
+		WorkloadNamespace: "airlock-system",
+		EffectiveVersion:  "airlock.dev/v1alpha1",
+		RatePerSecond:     10,
+		Burst:             10,
+		SourcePolicyByRule: map[string]PolicyRef{
+			"example": {Name: "source-policy", Namespace: "airlock-system"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := DecisionEvent{
+		ID:       7,
+		At:       time.Now().UTC(),
+		Decision: "denied",
+		Message:  "denied request policy=test-policy policy_version=airlock.dev/v1alpha1 rule=example method=GET destination=example.com:80",
+	}
+	reporter.RecordDecision(event)
+	event.ID = 8
+	reporter.RecordDecision(event)
+	if err := reporter.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	var payload eventReportPayload
+	select {
+	case payload = <-received:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for event report")
+	}
+	if len(payload.Events) != 1 {
+		t.Fatalf("events = %+v, want one aggregated event", payload.Events)
+	}
+	got := payload.Events[0]
+	if got.Type != "egress.denied" || got.Count != 2 || got.ProxyID != "10.42.0.17" {
+		t.Fatalf("event = %+v, want aggregated denied event", got)
+	}
+	if got.WorkloadName != "test-workload" || got.SourcePolicyName != "source-policy" || got.Destination == nil || got.Destination.Host != "example.com" {
+		t.Fatalf("event = %+v, want workload, source policy, and destination", got)
+	}
+}
+
+func TestEventReporterIgnoresAllowedEvents(t *testing.T) {
+	reporter, err := NewEventReporter(EventReporterOptions{
+		Endpoint:         "http://127.0.0.1:1/v1/events",
+		ProxyID:          "10.42.0.17",
+		WorkloadIdentity: testWorkloadIdentity,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reporter.RecordDecision(DecisionEvent{
+		ID:       1,
+		At:       time.Now().UTC(),
+		Decision: "allowed",
+		Message:  "allowed request method=GET destination=example.com:80",
+	})
+	if err := reporter.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush() error = %v, want nil without outbound request", err)
 	}
 }
 
@@ -431,7 +657,7 @@ func TestEnvFileSecretProviderReadsEnvAndFileValues(t *testing.T) {
 }
 
 func TestLocalPolicyProviderLoadsSharedLocalHTTPFixture(t *testing.T) {
-	policy, err := NewLocalPolicyProvider("../../../fixtures/policies/local-http.yaml").Load()
+	policy, err := NewLocalPolicyProvider("../../../fixtures/compiled/local-http.yaml").Load()
 	if err != nil {
 		t.Fatal(err)
 	}

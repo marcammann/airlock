@@ -33,7 +33,10 @@ upstream_pid=$!
   cd control-plane
   go run ./cmd/airlock-control-plane \
     --listen "127.0.0.1:$CONTROL_PLANE_PORT" \
-    --policy ../fixtures/policies/local-http.yaml
+    --worker-auth none \
+    --insecure-dev-mode \
+    --policy ../fixtures/policies/local-http.yaml \
+    --workload ../fixtures/workloads/local-http.yaml
 ) >"$tmpdir/control-plane.log" 2>&1 &
 control_plane_pid=$!
 
@@ -46,11 +49,14 @@ done
 curl -fsS "http://127.0.0.1:$CONTROL_PLANE_PORT/readyz" >/dev/null
 
 (
-  cd proxy-worker-rs
-  AIRLOCK_TEST_TOKEN=local-control-plane-token cargo run -p airlock-proxy-worker -- \
+  cd proxy-worker
+  AIRLOCK_TEST_TOKEN=local-control-plane-token go run ./cmd/airlock-proxy-worker \
+    --proxy "http:builtin@127.0.0.1:$PROXY_PORT" \
     --control-plane-url "http://127.0.0.1:$CONTROL_PLANE_PORT" \
+    --control-plane-auth none \
+    --insecure-dev-mode \
     --workload-identity "$WORKLOAD_IDENTITY" \
-    --listen "127.0.0.1:$PROXY_PORT"
+    --heartbeat-interval 0
 ) >"$tmpdir/proxy-worker.log" 2>&1 &
 proxy_pid=$!
 
@@ -68,6 +74,6 @@ curl -fsS \
   "http://127.0.0.1:$UPSTREAM_PORT/" >/dev/null
 
 grep -q "policy_version=airlock.dev/v1alpha1" "$tmpdir/proxy-worker.log"
-grep -q '"policyVersion":"airlock.dev/v1alpha1"' "$tmpdir/control-plane.log"
+grep -q '"effectivePolicyVersion":"airlock.dev/v1alpha1"' "$tmpdir/control-plane.log"
 
 echo "local control-plane smoke passed"
