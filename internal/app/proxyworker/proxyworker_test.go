@@ -1,4 +1,4 @@
-package main
+package proxyworker
 
 import (
 	"bufio"
@@ -149,7 +149,7 @@ func TestRunControlPlaneOutageFailsBeforeStartup(t *testing.T) {
 	})
 	defer restoreFlags()
 
-	err := run()
+	err := Run()
 	if err == nil {
 		t.Fatal("run() error = nil, want control-plane outage error")
 	}
