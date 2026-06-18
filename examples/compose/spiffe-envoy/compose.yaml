@@ -6,7 +6,8 @@ services:
   spire-server:
     build:
       context: ../../..
-      dockerfile: examples/compose/spiffe-envoy/Dockerfile.spire
+      dockerfile: Dockerfile
+      target: spire
     command:
       - spire-server
       - run
@@ -24,7 +25,8 @@ services:
   spire-bootstrap:
     build:
       context: ../../..
-      dockerfile: examples/compose/spiffe-envoy/Dockerfile.spire
+      dockerfile: Dockerfile
+      target: spire
     depends_on:
       spire-server:
         condition: service_healthy
@@ -56,7 +58,8 @@ services:
   control-plane:
     build:
       context: ../../..
-      dockerfile: examples/compose/spiffe-envoy/Dockerfile.airlock-spire
+      dockerfile: Dockerfile
+      target: control-plane-spiffe
     depends_on:
       spire-bootstrap:
         condition: service_healthy
@@ -83,7 +86,8 @@ services:
   proxy-worker:
     build:
       context: ../../..
-      dockerfile: examples/compose/spiffe-envoy/Dockerfile.airlock-spire
+      dockerfile: Dockerfile
+      target: proxy-worker-spiffe
     depends_on:
       control-plane:
         condition: service_started

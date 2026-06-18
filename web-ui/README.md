@@ -58,10 +58,13 @@ with `--insecure`, then run:
 ```sh
 AIRLOCK_CONTROL_PLANE_URL=http://127.0.0.1:18089 \
 AIRLOCK_CONTROL_PLANE_TOKEN= \
-AIRLOCK_WEB_AUTH_MODE=dev \
-AIRLOCK_WEB_DEV_ROLES=admin \
+AIRLOCK_WEB_AUTH_MODE=none \
 npm run dev
 ```
+
+`AIRLOCK_WEB_AUTH_MODE=none` disables all WebUI authentication. Every visitor
+gets an automatic admin session with no login step. Use this only for local
+development and pair it with control-plane `--insecure`.
 
 If you run the production build over plain HTTP for a local demo, also set
 `AIRLOCK_WEB_COOKIE_SECURE=false` so the browser will send the session cookie.
@@ -93,9 +96,9 @@ the WebUI first; WebUI API routes and server-rendered pages check the signed
 WebUI session plus WebUI RBAC before calling the control plane with that service
 token. The token must not be exposed to browser JavaScript.
 
-`AIRLOCK_WEB_AUTH_MODE=dev` is only for local demos. It creates a local signed
-session without an external OIDC provider and should be paired with explicit
-control-plane `--insecure`.
+`AIRLOCK_WEB_AUTH_MODE=none` disables all authentication and grants every
+visitor an admin session. It is only for local development and should be paired
+with control-plane `--insecure`.
 
 ## Production Direction
 

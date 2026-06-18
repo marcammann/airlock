@@ -56,7 +56,6 @@ Build the local artifact image:
 
 ```sh
 docker buildx build --load \
-  -f build/package/Dockerfile.artifacts \
   -t ghcr.io/marcammann/airlock:dev \
   .
 ```
@@ -77,7 +76,6 @@ build the Daytona image against the pushed artifact:
 ```sh
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
-  -f build/package/Dockerfile.artifacts \
   -t ghcr.io/marcammann/airlock:dev \
   --push \
   .
@@ -120,7 +118,6 @@ Push that artifact image after changing Airlock binaries:
 ```sh
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
-  -f build/package/Dockerfile.artifacts \
   -t ghcr.io/marcammann/airlock:dev \
   --push \
   .

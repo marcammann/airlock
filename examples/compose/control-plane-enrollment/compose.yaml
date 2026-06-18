@@ -5,7 +5,8 @@ services:
   control-plane:
     build:
       context: ../../..
-      dockerfile: control-plane/Dockerfile
+      dockerfile: Dockerfile
+      target: control-plane
     command:
       - --listen=:8080
       - --admin-listen=:8081
@@ -69,7 +70,8 @@ services:
   proxy-worker:
     build:
       context: ../../..
-      dockerfile: proxy-worker/Dockerfile
+      dockerfile: Dockerfile
+      target: proxy-worker
     depends_on:
       enrollment-token:
         condition: service_healthy

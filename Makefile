@@ -6,15 +6,17 @@ SPIFFE_HELM_REPO ?= https://spiffe.github.io/helm-charts-hardened
 SPIRE_VALUES ?= deploy/helm/spire/values.yaml
 CONTROL_PLANE_IMAGE ?= airlock-control-plane:dev
 PROXY_WORKER_IMAGE ?= airlock-proxy-worker:dev
+CONTROL_PLANE_SPIFFE_IMAGE ?= airlock-control-plane-spiffe:dev
+PROXY_WORKER_SPIFFE_IMAGE ?= airlock-proxy-worker-spiffe:dev
+SPIRE_IMAGE ?= airlock-spire:dev
 WEB_UI_IMAGE ?= airlock-web-ui:dev
 AIRLOCK_ARTIFACT_IMAGE ?= ghcr.io/marcammann/airlock:dev
 AIRLOCK_ARTIFACT_REMOTE_IMAGE ?= ghcr.io/marcammann/airlock:dev
 AIRLOCK_IMAGE_PLATFORMS ?= linux/amd64,linux/arm64
 GO_TEST_PACKAGES ?= ./... ./examples/compose/_shared/echo-server
 SMOKE_SCRIPTS_DIR ?= scripts/smoke
-AIRLOCK_ARTIFACT_DOCKERFILE ?= build/package/Dockerfile.artifacts
 
-.PHONY: kind-up kind-down build-control-plane-image load-control-plane-image build-proxy-worker-image load-proxy-worker-image build-airlock-artifact-image push-airlock-artifact-image build-web-ui-image build-images load-images test-proxy-worker build-proxy-worker proxy-worker-local-smoke test-go-proxy-worker build-go-proxy-worker build-go-proxy-worker-image go-proxy-worker-local-smoke test-web-ui web-ui-dev install-spire install-vault install-airlock deploy-demo install-baseline demo-smoke local-control-plane-smoke spiffe-policy-smoke vault-jwt-setup k8s-egress-smoke injected-sidecar-smoke existing-envoy-smoke single-local-smoke security-smoke fail-closed-smoke fail-closed-k8s-smoke tls-termination-smoke envoy-sds-tls-smoke envoy-connect-sds-smoke github-connect-sds-smoke test-e2e demo build-go test-go test-race lint check test
+.PHONY: kind-up kind-down build-control-plane-image load-control-plane-image build-proxy-worker-image load-proxy-worker-image build-control-plane-spiffe-image build-proxy-worker-spiffe-image build-spire-image build-airlock-artifact-image push-airlock-artifact-image build-web-ui-image build-images load-images test-proxy-worker build-proxy-worker proxy-worker-local-smoke test-go-proxy-worker build-go-proxy-worker build-go-proxy-worker-image go-proxy-worker-local-smoke test-web-ui web-ui-dev install-spire install-vault install-airlock deploy-demo install-baseline demo-smoke local-control-plane-smoke spiffe-policy-smoke vault-jwt-setup k8s-egress-smoke injected-sidecar-smoke existing-envoy-smoke single-local-smoke security-smoke fail-closed-smoke fail-closed-k8s-smoke tls-termination-smoke envoy-sds-tls-smoke envoy-connect-sds-smoke github-connect-sds-smoke test-e2e demo build-go test-go test-race lint check test
 
 kind-up:
 	kind create cluster --name $(KIND_CLUSTER) --config $(KIND_CONFIG)
@@ -23,19 +25,28 @@ kind-down:
 	kind delete cluster --name $(KIND_CLUSTER)
 
 build-control-plane-image:
-	docker build -f control-plane/Dockerfile -t $(CONTROL_PLANE_IMAGE) .
+	docker build --target control-plane -t $(CONTROL_PLANE_IMAGE) .
 
 load-control-plane-image:
 	kind load docker-image $(CONTROL_PLANE_IMAGE) --name $(KIND_CLUSTER)
 
 build-proxy-worker-image:
-	docker build -f proxy-worker/Dockerfile -t $(PROXY_WORKER_IMAGE) .
+	docker build --target proxy-worker -t $(PROXY_WORKER_IMAGE) .
+
+build-control-plane-spiffe-image:
+	docker build --target control-plane-spiffe -t $(CONTROL_PLANE_SPIFFE_IMAGE) .
+
+build-proxy-worker-spiffe-image:
+	docker build --target proxy-worker-spiffe -t $(PROXY_WORKER_SPIFFE_IMAGE) .
+
+build-spire-image:
+	docker build --target spire -t $(SPIRE_IMAGE) .
 
 build-airlock-artifact-image:
-	docker buildx build --load -f $(AIRLOCK_ARTIFACT_DOCKERFILE) -t $(AIRLOCK_ARTIFACT_IMAGE) .
+	docker buildx build --load -t $(AIRLOCK_ARTIFACT_IMAGE) .
 
 push-airlock-artifact-image:
-	docker buildx build --platform $(AIRLOCK_IMAGE_PLATFORMS) -f $(AIRLOCK_ARTIFACT_DOCKERFILE) -t $(AIRLOCK_ARTIFACT_REMOTE_IMAGE) --push .
+	docker buildx build --platform $(AIRLOCK_IMAGE_PLATFORMS) -t $(AIRLOCK_ARTIFACT_REMOTE_IMAGE) --push .
 
 build-web-ui-image:
 	docker build -f web-ui/Dockerfile -t $(WEB_UI_IMAGE) web-ui
@@ -43,12 +54,12 @@ build-web-ui-image:
 load-proxy-worker-image:
 	kind load docker-image $(PROXY_WORKER_IMAGE) --name $(KIND_CLUSTER)
 
-build-images: build-control-plane-image build-proxy-worker-image
+build-images: build-control-plane-image build-proxy-worker-image build-control-plane-spiffe-image build-proxy-worker-spiffe-image build-spire-image
 
 load-images: load-control-plane-image load-proxy-worker-image
 
 test-proxy-worker:
-	go test ./cmd/airlock-proxy-worker ./internal/proxyworker
+	go test ./internal/app/proxyworker ./internal/proxyworker
 
 build-proxy-worker:
 	mkdir -p dist

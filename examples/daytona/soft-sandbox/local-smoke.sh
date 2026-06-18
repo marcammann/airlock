@@ -21,7 +21,6 @@ fi
 chmod 0400 "$SECRET_DIR/secrets.env"
 
 docker buildx build --load \
-  -f "$ROOT_DIR/build/package/Dockerfile.artifacts" \
   -t "$ARTIFACT_IMAGE" \
   "$ROOT_DIR"
 

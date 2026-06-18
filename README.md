@@ -251,7 +251,7 @@ Unix user, keeps agent processes as `daytona`, loads a local policy, and reads
 API credentials from an Airlock-only file.
 
 ```sh
-docker buildx build --load -f build/package/Dockerfile.artifacts -t ghcr.io/marcammann/airlock:dev .
+docker buildx build --load -t ghcr.io/marcammann/airlock:dev .
 docker buildx build --load \
   --build-arg AIRLOCK_ARTIFACT_IMAGE=ghcr.io/marcammann/airlock:dev \
   -f examples/daytona/soft-sandbox/Dockerfile \

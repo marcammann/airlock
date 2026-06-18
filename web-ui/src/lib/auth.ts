@@ -124,8 +124,8 @@ export async function startLogin(request: NextRequest): Promise<NextResponse> {
   try {
     const next = safeNextPath(request.nextUrl.searchParams.get("next"));
     switch (webAuthMode()) {
-      case "dev":
-        return createDevLoginResponse(next);
+      case "none":
+        return localRedirect(next);
       case "oidc":
         return createOIDCLoginResponse(request, next);
       default:
@@ -194,23 +194,6 @@ export function logoutResponse(): NextResponse {
   const response = localRedirect("/login");
   clearCookie(response, sessionCookieName);
   clearCookie(response, oidcStateCookieName);
-  return response;
-}
-
-function createDevLoginResponse(next: string): NextResponse {
-  const roles = parseRoleList(env("AIRLOCK_WEB_DEV_ROLES") || "admin");
-  const session: WebSession = {
-    sub: env("AIRLOCK_WEB_DEV_USER_SUB") || "dev-user",
-    issuer: "airlock-web-dev",
-    email: env("AIRLOCK_WEB_DEV_USER_EMAIL") || "dev@localhost",
-    name: env("AIRLOCK_WEB_DEV_USER_NAME") || "Airlock Dev",
-    groups: parseStringList(env("AIRLOCK_WEB_DEV_USER_GROUPS")),
-    roles: roles.length > 0 ? roles : ["admin"],
-    iat: nowSeconds(),
-    exp: nowSeconds() + sessionMaxAgeSeconds(),
-  };
-  const response = localRedirect(next);
-  setSessionCookie(response, session);
   return response;
 }
 
@@ -373,6 +356,9 @@ function sessionFromClaims(
 
 async function authorize(permission: WebPermission): Promise<AuthzResult> {
   try {
+    if (webAuthMode() === "none") {
+      return { status: "allowed", session: noneModeSession() };
+    }
     const session = await getCurrentWebSession();
     if (!session) {
       return { status: "unauthenticated" };
@@ -387,6 +373,18 @@ async function authorize(permission: WebPermission): Promise<AuthzResult> {
     }
     return { status: "unauthenticated" };
   }
+}
+
+function noneModeSession(): WebSession {
+  const now = nowSeconds();
+  return {
+    sub: "anonymous",
+    issuer: "airlock-web-none",
+    groups: [],
+    roles: ["admin"],
+    iat: now,
+    exp: now + sessionMaxAgeSeconds(),
+  };
 }
 
 function roleAllows(role: WebRole, permission: WebPermission) {
@@ -551,9 +549,6 @@ function sessionSecret() {
   const secret = env("AIRLOCK_WEB_SESSION_SECRET");
   if (secret) {
     return secret;
-  }
-  if (webAuthMode() === "dev") {
-    return "airlock-web-dev-session-secret";
   }
   throw new AuthConfigError("AIRLOCK_WEB_SESSION_SECRET is required");
 }
