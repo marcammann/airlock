@@ -1,373 +1,184 @@
+// Package main runs the Airlock proxy-worker binary.
 package main
 
 import (
 	"context"
-	"crypto/tls"
-	"flag"
 	"fmt"
+	"log/slog"
 	"net"
+	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
-	worker "github.com/marcammann/airlock/internal/proxyworker"
+	airlockotel "github.com/marcammann/airlock/internal/otel"
+	"github.com/marcammann/airlock/internal/proxyworker/builtin"
+	workerenvoy "github.com/marcammann/airlock/internal/proxyworker/envoy"
+	workertel "github.com/marcammann/airlock/internal/proxyworker/telemetry"
+	"github.com/marcammann/airlock/internal/telemetry"
 )
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "airlock-proxy-worker: %v\n", err)
+		slog.Error("airlock-proxy-worker failed", "error", err)
 		os.Exit(1)
 	}
 }
 
 func run() error {
-	var (
-		proxies                  proxyFlags
-		noControlPlane           = flag.Bool("no-control-plane", false, "load compiled policy from --policy instead of the control plane")
-		policyPath               = flag.String("policy", "", "local compiled policy YAML or JSON path")
-		mitmCACert               = flag.String("mitm-ca-cert", "", "public CA certificate used for HTTPS interception")
-		mitmCAKey                = flag.String("mitm-ca-key", "", "private CA key used for HTTPS interception")
-		upstreamCACert           = flag.String("upstream-ca-cert", "", "optional CA certificate bundle used to verify upstream TLS in builtin mode")
-		controlPlaneURL          = flag.String("control-plane-url", "", "control-plane policy API URL")
-		controlPlaneAuth         = flag.String("control-plane-auth", "spiffe", "control-plane auth mode: spiffe, dev-token, or none")
-		workloadIdentity         = flag.String("workload-identity", "", "workload SPIFFE ID")
-		devToken                 = flag.String("dev-token", "", "development bearer token for control-plane policy fetch")
-		controlPlaneServerID     = flag.String("control-plane-server-id", "", "reserved for SPIFFE control-plane auth")
-		spiffeSocket             = flag.String("spiffe-socket", "", "reserved SPIFFE workload API socket URI")
-		heartbeatInterval        = flag.Duration("heartbeat-interval", 10*time.Second, "interval for proxy heartbeat reports; set 0 to disable")
-		eventReport              = flag.String("event-report", "control-plane", "Airlock event reporting mode: control-plane or disabled")
-		eventEndpoint            = flag.String("event-endpoint", "", "Airlock event ingest URL; defaults to the control plane /v1/events endpoint")
-		eventReportRate          = flag.Float64("event-report-rate", 1, "maximum Airlock event reports sent per second")
-		eventReportBurst         = flag.Int("event-report-burst", 20, "burst of Airlock event reports sent by the proxy")
-		eventReportPendingLimit  = flag.Int("event-report-pending-limit", 256, "maximum unique Airlock events aggregated before local suppression")
-		eventReportFlushInterval = flag.Duration("event-report-flush-interval", time.Second, "interval for flushing aggregated Airlock events")
-		insecureDevMode          = flag.Bool("insecure-dev-mode", false, "allow insecure development control-plane auth modes such as none and dev-token")
-	)
-	flag.Var(&proxies, "proxy", "proxy listener in protocol:mode[@listen] form, for example http:builtin@127.0.0.1:18080")
-	flag.Parse()
-
-	proxyConfig, err := resolveProxyConfig(proxies)
+	env, err := loadProxyWorkerEnv()
 	if err != nil {
 		return err
 	}
-	if proxyConfig.Protocol != "http" || (proxyConfig.Mode != "builtin" && proxyConfig.Mode != "envoy") {
-		return fmt.Errorf("Go worker currently supports --proxy http:builtin and --proxy http:envoy; %s:%s is the next parity slice", proxyConfig.Protocol, proxyConfig.Mode)
-	}
-	if proxyConfig.Mode == "envoy" && *upstreamCACert != "" {
-		return fmt.Errorf("--upstream-ca-cert is for http:builtin; configure Envoy upstream TLS trust in the Envoy bootstrap")
-	}
-
-	var policy worker.CompiledPolicy
-	var policyFetchedAt *time.Time
-	ctx := context.Background()
-	if *noControlPlane {
-		if *policyPath == "" {
-			return fmt.Errorf("--no-control-plane requires --policy")
-		}
-		if *controlPlaneURL != "" {
-			return fmt.Errorf("--no-control-plane cannot use --control-plane-url")
-		}
-		policy, err = worker.NewLocalPolicyProvider(*policyPath).Load()
-	} else {
-		if *policyPath != "" {
-			return fmt.Errorf("control-plane mode uses control-plane policy; remove --policy or add --no-control-plane")
-		}
-		if *controlPlaneURL == "" || *workloadIdentity == "" {
-			return fmt.Errorf("control-plane mode requires --control-plane-url and --workload-identity")
-		}
-		if err := validateControlPlaneAuth(*controlPlaneAuth, *devToken, *insecureDevMode); err != nil {
-			return err
-		}
-		provider := worker.NewControlPlanePolicyProvider(*controlPlaneURL, *workloadIdentity, "")
-		switch *controlPlaneAuth {
-		case "spiffe":
-			if *controlPlaneServerID == "" {
-				return fmt.Errorf("--control-plane-auth spiffe requires --control-plane-server-id")
-			}
-			policy, err = provider.LoadSPIFFEMTLS(ctx, *controlPlaneServerID, *spiffeSocket)
-		case "dev-token":
-			provider = worker.NewControlPlanePolicyProvider(*controlPlaneURL, *workloadIdentity, *devToken)
-			policy, err = provider.Load()
-		case "none":
-			policy, err = provider.Load()
-		default:
-			return fmt.Errorf("unsupported control-plane auth %q; use spiffe, dev-token, or none", *controlPlaneAuth)
-		}
-	}
+	config, err := parseProxyWorkerFlags(env)
 	if err != nil {
 		return err
 	}
-	if !*noControlPlane {
-		now := time.Now().UTC()
-		policyFetchedAt = &now
+	if err := configureLogger(config.LogFormat); err != nil {
+		return err
 	}
+	tracingShutdown, err := airlockotel.ConfigureTracing(context.Background(), "airlock-proxy-worker", config.OTELExporterOTLPEndpoint)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tracingShutdown(shutdownCtx); err != nil {
+			slog.Error("shutdown OpenTelemetry tracing failed", "error", err)
+		}
+	}()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if strings.TrimSpace(config.MetricsListen) != "" {
+		startMetricsServer(ctx, strings.TrimSpace(config.MetricsListen))
+	}
+	initialPolicy, err := loadInitialPolicy(ctx, initialPolicyOptions{
+		NoControlPlane:           config.NoControlPlane,
+		PolicyPath:               config.PolicyPath,
+		ControlPlaneURL:          config.ControlPlaneURL,
+		ControlPlaneAuth:         config.ControlPlaneAuth,
+		ControlPlaneAuthExplicit: config.ControlPlaneAuthExplicit,
+		Insecure:                 config.Insecure,
+		WorkloadIdentity:         config.WorkloadIdentity,
+		EnrollmentToken:          config.EnrollmentToken,
+		EnrollmentTokenFile:      config.EnrollmentTokenFile,
+		ControlPlaneServerID:     config.ControlPlaneServerID,
+		SPIFFESocket:             config.SPIFFESocket,
+	})
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if initialPolicy.ClientCloser != nil {
+			_ = initialPolicy.ClientCloser.Close()
+		}
+	}()
+	policy := initialPolicy.Policy
+	policyFetchedAt := initialPolicy.FetchedAt
+	policyETag := initialPolicy.ETag
+	controlPlaneClient := initialPolicy.Client
+	controlPlaneProvider := initialPolicy.Provider
 
-	secrets, err := worker.NewSecretProviderForPolicy(ctx, policy, *spiffeSocket)
+	reloadableSecrets, err := buildReloadableSecrets(ctx, policy, config.SPIFFESocket, config.SecretFileRoot)
+	if err != nil {
+		return err
+	}
+	tlsAssets, err := loadProxyTLSAssets(config.MITMCACert, config.MITMCAKey, config.UpstreamCACert)
 	if err != nil {
 		return err
 	}
 
-	var mitmCA *worker.CertificateAuthority
-	var upstreamTLSConfig *tls.Config
-	if *mitmCACert != "" || *mitmCAKey != "" {
-		if *mitmCACert == "" || *mitmCAKey == "" {
-			return fmt.Errorf("--mitm-ca-cert and --mitm-ca-key must be set together")
-		}
-		mitmCA, err = worker.LoadCertificateAuthority(*mitmCACert, *mitmCAKey)
-		if err != nil {
-			return err
-		}
+	log := workertel.NewStderrEventLog()
+	reporters, err := startReporters(ctx, reporterSetupOptions{
+		NoControlPlane:           config.NoControlPlane,
+		EventReport:              config.EventReport,
+		EventEndpoint:            config.EventEndpoint,
+		ControlPlaneURL:          config.ControlPlaneURL,
+		Proxy:                    config.Proxy,
+		Policy:                   policy,
+		Insecure:                 config.Insecure,
+		ControlPlaneAuth:         config.ControlPlaneAuth,
+		ControlPlaneClient:       controlPlaneClient,
+		HeartbeatInterval:        config.HeartbeatInterval,
+		PolicyFetchedAt:          policyFetchedAt,
+		EventReportRate:          config.EventReportRate,
+		EventReportBurst:         config.EventReportBurst,
+		EventReportPendingLimit:  config.EventReportPendingLimit,
+		EventReportFlushInterval: config.EventReportFlushInterval,
+		Log:                      log,
+		ProcessStartedAt:         time.Now().UTC(),
+	})
+	if err != nil {
+		return err
 	}
-	if *upstreamCACert != "" {
-		upstreamTLSConfig, err = worker.LoadTLSClientConfigWithRootCAs(*upstreamCACert)
-		if err != nil {
-			return err
-		}
-	}
-
-	log := worker.NewStderrEventLog()
-	resolvedProxyID := ""
-	eventReportMode := strings.TrimSpace(*eventReport)
-	if eventReportMode == "" {
-		eventReportMode = "control-plane"
-	}
-	if *noControlPlane && eventReportMode == "control-plane" {
-		eventReportMode = "disabled"
-	}
-	if !*noControlPlane || eventReportMode != "disabled" {
-		resolvedProxyID, err = proxyIPID()
-		if err != nil {
-			return err
-		}
-	}
-	log.Record(fmt.Sprintf(
+	log.Record(workertel.DecisionNone, fmt.Sprintf(
 		"airlock-proxy-worker loaded policy=%s policy_version=%s workload=%s proxy=%s:%s control_plane=%t https_intercept=%t",
 		policy.PolicyName,
 		policy.Version,
 		policy.Workload.SPIFFEID,
-		proxyConfig.Protocol,
-		proxyConfig.Mode,
-		!*noControlPlane,
-		mitmCA != nil,
+		config.Proxy.Protocol,
+		config.Proxy.Mode,
+		!config.NoControlPlane,
+		tlsAssets.MITMCA != nil,
 	))
-	switch eventReportMode {
-	case "disabled":
-	case "control-plane":
-		if *noControlPlane {
-			return fmt.Errorf("--event-report control-plane requires control-plane mode")
-		}
-		resolvedEventEndpoint := strings.TrimSpace(*eventEndpoint)
-		if resolvedEventEndpoint == "" {
-			resolvedEventEndpoint = strings.TrimRight(*controlPlaneURL, "/") + "/v1/events"
-		}
-		eventOpts := worker.EventReporterOptions{
-			Endpoint:           resolvedEventEndpoint,
-			DevToken:           *devToken,
-			ProxyID:            resolvedProxyID,
-			ProxyType:          proxyConfig.Protocol + ":" + proxyConfig.Mode,
-			WorkloadIdentity:   policy.Workload.SPIFFEID,
-			WorkloadName:       policy.PolicyName,
-			WorkloadNamespace:  policy.Workload.Namespace,
-			EffectiveVersion:   policy.Version,
-			SourcePolicyByRule: sourcePolicyByRule(policy),
-			RatePerSecond:      *eventReportRate,
-			Burst:              *eventReportBurst,
-			MaxPendingKeys:     *eventReportPendingLimit,
-			FlushInterval:      *eventReportFlushInterval,
-		}
-		if *controlPlaneAuth == "spiffe" {
-			client, closer, err := worker.NewSPIFFEMTLSHTTPClient(ctx, *controlPlaneServerID, *spiffeSocket, 5*time.Second)
-			if err != nil {
-				return err
-			}
-			defer closer.Close()
-			eventOpts.Client = client
-		}
-		reporter, err := worker.NewEventReporter(eventOpts)
-		if err != nil {
-			return err
-		}
-		log.SetDecisionSink(reporter)
-		go reporter.Run(ctx)
-	default:
-		return fmt.Errorf("--event-report must be control-plane or disabled")
-	}
-	if !*noControlPlane && *heartbeatInterval > 0 {
-		heartbeatOpts := worker.HeartbeatReporterOptions{
-			BaseURL:           *controlPlaneURL,
-			DevToken:          *devToken,
-			ProxyID:           resolvedProxyID,
-			ProxyType:         proxyConfig.Protocol + ":" + proxyConfig.Mode,
-			WorkloadIdentity:  policy.Workload.SPIFFEID,
-			WorkloadName:      policy.PolicyName,
-			EffectiveVersion:  policy.Version,
-			PolicyFetchedAt:   policyFetchedAt,
-			HeartbeatInterval: *heartbeatInterval,
-			ProcessStartedAt:  time.Now().UTC(),
-			Log:               log,
-		}
-		if *controlPlaneAuth == "spiffe" {
-			client, closer, err := worker.NewSPIFFEMTLSHTTPClient(ctx, *controlPlaneServerID, *spiffeSocket, 5*time.Second)
-			if err != nil {
-				return err
-			}
-			defer closer.Close()
-			heartbeatOpts.Client = client
-		}
-		reporter, err := worker.NewHeartbeatReporter(heartbeatOpts)
-		if err != nil {
-			return err
-		}
-		go reporter.Run(ctx)
-	}
-	listener, err := net.Listen("tcp", proxyConfig.Listen)
+	listener, err := net.Listen("tcp", config.Proxy.Listen)
 	if err != nil {
 		return err
 	}
 	defer listener.Close()
-	if proxyConfig.Mode == "envoy" {
-		log.Record(fmt.Sprintf("airlock-proxy-worker envoy mode listening on %s", proxyConfig.Listen))
-		return worker.ServeEnvoy(listener, policy, secrets, log, mitmCA)
-	}
-	log.Record(fmt.Sprintf("airlock-proxy-worker builtin proxy listening on %s", proxyConfig.Listen))
-	return worker.NewProxyServerWithOptions(
-		policy,
-		secrets,
-		log,
-		worker.ProxyServerOptions{MITMCA: mitmCA, UpstreamTLSConfig: upstreamTLSConfig},
-	).Serve(listener)
-}
-
-func sourcePolicyByRule(policy worker.CompiledPolicy) map[string]worker.PolicyRef {
-	out := map[string]worker.PolicyRef{}
-	for _, rule := range policy.Egress {
-		if rule.SourcePolicy == nil {
-			continue
-		}
-		out[rule.Name] = *rule.SourcePolicy
-	}
-	return out
-}
-
-func validateControlPlaneAuth(auth string, devToken string, insecureDevMode bool) error {
-	switch auth {
-	case "spiffe":
-		return nil
-	case "dev-token":
-		if !insecureDevMode {
-			return fmt.Errorf("--control-plane-auth dev-token requires --insecure-dev-mode")
-		}
-		if strings.TrimSpace(devToken) == "" {
-			return fmt.Errorf("--control-plane-auth dev-token requires --dev-token")
-		}
-		return nil
-	case "none":
-		if !insecureDevMode {
-			return fmt.Errorf("--control-plane-auth none requires --insecure-dev-mode")
-		}
-		return nil
-	default:
-		return fmt.Errorf("unsupported control-plane auth %q; use spiffe, dev-token, or none", auth)
-	}
-}
-
-func proxyIPID() (string, error) {
-	if podIP := strings.TrimSpace(os.Getenv("POD_IP")); podIP != "" {
-		return podIP, nil
-	}
-	if ip := firstNonLoopbackIP(); ip != "" {
-		return ip, nil
-	}
-	return "", fmt.Errorf("proxy heartbeat requires POD_IP or a non-loopback pod/container IP address")
-}
-
-func firstNonLoopbackIP() string {
-	interfaces, err := net.Interfaces()
-	if err != nil {
-		return ""
-	}
-	for _, iface := range interfaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		addrs, err := iface.Addrs()
+	if config.Proxy.Mode == "envoy" {
+		envoyServer, err := workerenvoy.NewServer(policy, reloadableSecrets, log, tlsAssets.MITMCA)
 		if err != nil {
-			continue
+			return err
 		}
-		for _, addr := range addrs {
-			var ip net.IP
-			switch value := addr.(type) {
-			case *net.IPNet:
-				ip = value.IP
-			case *net.IPAddr:
-				ip = value.IP
-			}
-			if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
-				continue
-			}
-			if ipv4 := ip.To4(); ipv4 != nil {
-				return ipv4.String()
-			}
-		}
+		startPolicyPoller(ctx, config.NoControlPlane, config.ControlPlaneAuth, config.Insecure, config.PolicyPollInterval, controlPlaneProvider, controlPlaneClient, policyETag, config.SPIFFESocket, config.SecretFileRoot, reloadableSecrets, envoyServer, reporters.EventReporter, reporters.HeartbeatReporter, log)
+		log.Record(workertel.DecisionNone, fmt.Sprintf("airlock-proxy-worker envoy mode listening on %s", config.Proxy.Listen))
+		return envoyServer.Serve(ctx, listener)
 	}
-	return ""
+	proxy := builtin.NewProxyServerWithOptions(
+		policy,
+		reloadableSecrets,
+		log,
+		builtin.ProxyServerOptions{MITMCA: tlsAssets.MITMCA, UpstreamTLSConfig: tlsAssets.UpstreamTLSConfig, MaxResponseBytes: config.MaxResponseBytes},
+	)
+	startPolicyPoller(ctx, config.NoControlPlane, config.ControlPlaneAuth, config.Insecure, config.PolicyPollInterval, controlPlaneProvider, controlPlaneClient, policyETag, config.SPIFFESocket, config.SecretFileRoot, reloadableSecrets, proxy, reporters.EventReporter, reporters.HeartbeatReporter, log)
+	log.Record(workertel.DecisionNone, fmt.Sprintf("airlock-proxy-worker builtin proxy listening on %s", config.Proxy.Listen))
+	return proxy.Serve(ctx, listener)
 }
 
-type proxyFlags []string
-
-func (f *proxyFlags) String() string {
-	return strings.Join(*f, ",")
-}
-
-func (f *proxyFlags) Set(value string) error {
-	*f = append(*f, value)
+func configureLogger(format string) error {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "", "json":
+		slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+	case "text":
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	default:
+		return fmt.Errorf("--log-format must be json or text")
+	}
 	return nil
 }
 
-type proxyConfig struct {
-	Protocol string
-	Mode     string
-	Listen   string
-}
-
-func resolveProxyConfig(flags proxyFlags) (proxyConfig, error) {
-	if len(flags) == 0 {
-		return proxyConfig{}, fmt.Errorf("--proxy is required; use protocol:mode[@listen], for example http:builtin@127.0.0.1:18080")
+func startMetricsServer(ctx context.Context, listen string) {
+	server := &http.Server{
+		Addr:              listen,
+		Handler:           telemetry.MetricsHandler(),
+		ReadHeaderTimeout: 10 * time.Second,
 	}
-	if len(flags) > 1 {
-		return proxyConfig{}, fmt.Errorf("multiple --proxy values are not supported yet")
-	}
-	return parseProxyConfig(flags[0])
-}
-
-func parseProxyConfig(value string) (proxyConfig, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return proxyConfig{}, fmt.Errorf("--proxy cannot be empty")
-	}
-	protocolMode, listen, hasListen := strings.Cut(value, "@")
-	protocol, mode, ok := strings.Cut(protocolMode, ":")
-	if !ok || strings.TrimSpace(protocol) == "" || strings.TrimSpace(mode) == "" {
-		return proxyConfig{}, fmt.Errorf("--proxy must use protocol:mode[@listen], got %q", value)
-	}
-	config := proxyConfig{
-		Protocol: strings.TrimSpace(protocol),
-		Mode:     strings.TrimSpace(mode),
-	}
-	if hasListen {
-		if strings.TrimSpace(listen) == "" {
-			return proxyConfig{}, fmt.Errorf("--proxy listen address cannot be empty")
+	go func() {
+		slog.Info("airlock-proxy-worker metrics listener starting", "addr", listen)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("airlock-proxy-worker metrics listener failed", "error", err)
 		}
-		config.Listen = strings.TrimSpace(listen)
-	} else {
-		switch config.Protocol + ":" + config.Mode {
-		case "http:builtin":
-			config.Listen = "127.0.0.1:18080"
-		case "http:envoy":
-			config.Listen = "127.0.0.1:50051"
-		default:
-			return proxyConfig{}, fmt.Errorf("no default listen address for --proxy %s:%s", config.Protocol, config.Mode)
+	}()
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			slog.Error("airlock-proxy-worker metrics listener shutdown failed", "error", err)
 		}
-	}
-	return config, nil
+	}()
 }

@@ -2,44 +2,23 @@ package controlplane
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"testing"
+
+	"github.com/marcammann/airlock/internal/policy"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func TestReconcileSPIRECreatesClusterSPIFFEID(t *testing.T) {
-	store, err := LoadPolicyStoreWithSecretProviderConfigs(
-		[]string{filepath.Join("..", "..", "fixtures", "policies", "valid-vault-provider-ref.yaml")},
-		[]string{filepath.Join("..", "..", "fixtures", "workloads", "code-agent-vault.yaml")},
-		[]string{filepath.Join("..", "..", "fixtures", "secret-provider-configs", "default-vault.yaml")},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var created clusterSPIFFEID
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPatch && r.URL.Path == "/apis/spire.spiffe.io/v1alpha1/clusterspiffeids/airlock-code-agent":
-			http.NotFound(w, r)
-		case r.Method == http.MethodPost && r.URL.Path == "/apis/spire.spiffe.io/v1alpha1/clusterspiffeids":
-			if err := json.NewDecoder(r.Body).Decode(&created); err != nil {
-				t.Fatal(err)
-			}
-			w.WriteHeader(http.StatusCreated)
-		default:
-			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
-		}
-	}))
-	defer server.Close()
+	store := mustSPIREPolicyStore(t)
+	kube := newSPIREFakeClient(t)
 
 	result, err := ReconcileSPIRE(context.Background(), store, SPIREReconcileOptions{
-		Kubernetes: KubernetesPolicySourceOptions{
-			APIServerURL: server.URL,
-			HTTPClient:   server.Client(),
-		},
+		Client:    kube,
 		ClassName: "spire-system-spire",
 		PodLabel:  "app.kubernetes.io/name",
 		PodValue:  "airlock-proxy-worker",
@@ -50,132 +29,108 @@ func TestReconcileSPIRECreatesClusterSPIFFEID(t *testing.T) {
 	if result.ClusterSPIFFEIDs != 1 {
 		t.Fatalf("ClusterSPIFFEIDs = %d, want 1", result.ClusterSPIFFEIDs)
 	}
-	if got, want := created.Metadata.Name, "airlock-code-agent"; got != want {
-		t.Fatalf("name = %q, want %q", got, want)
+
+	created := newClusterSPIFFEIDUnstructured()
+	if err := kube.Get(context.Background(), ctrlclient.ObjectKey{Name: "airlock-demo-code-agent"}, created); err != nil {
+		t.Fatal(err)
 	}
-	if got, want := created.Metadata.Labels["airlock.dev/workload-name"], "code-agent"; got != want {
+	if got, want := created.GetLabels()["airlock.dev/workload-name"], "code-agent"; got != want {
 		t.Fatalf("workload label = %q, want %q", got, want)
 	}
-	if _, ok := created.Metadata.Labels["airlock.dev/policy-name"]; ok {
-		t.Fatalf("created ClusterSPIFFEID kept stale policy-name label: %#v", created.Metadata.Labels)
+	if got, _, _ := unstructured.NestedString(created.Object, "spec", "spiffeIDTemplate"); got != codeAgentIdentity {
+		t.Fatalf("spiffeIDTemplate = %q, want %q", got, codeAgentIdentity)
 	}
-	if got, want := created.Spec.SPIFFEIDTemplate, codeAgentIdentity; got != want {
-		t.Fatalf("spiffeIDTemplate = %q, want %q", got, want)
+	if got, _, _ := unstructured.NestedString(created.Object, "spec", "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name"); got != "demo" {
+		t.Fatalf("namespace selector = %q, want demo", got)
 	}
-	if got, want := created.Spec.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"], "demo"; got != want {
-		t.Fatalf("namespace selector = %q, want %q", got, want)
+}
+
+func TestReconcileSPIREIsIdempotent(t *testing.T) {
+	store := mustSPIREPolicyStore(t)
+	kube := newSPIREFakeClient(t)
+	opts := SPIREReconcileOptions{
+		Client:    kube,
+		ClassName: "spire-system-spire",
+		PodLabel:  "app.kubernetes.io/name",
+		PodValue:  "airlock-proxy-worker",
 	}
-	if got, want := created.Spec.PodSelector.MatchLabels["app.kubernetes.io/name"], "airlock-proxy-worker"; got != want {
-		t.Fatalf("pod selector = %q, want %q", got, want)
+
+	first, err := ReconcileSPIRE(context.Background(), store, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ReconcileSPIRE(context.Background(), store, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ClusterSPIFFEIDs != 1 || second.ClusterSPIFFEIDs != 1 {
+		t.Fatalf("results = first %+v second %+v, want one ClusterSPIFFEID each run", first, second)
+	}
+
+	updated := newClusterSPIFFEIDUnstructured()
+	if err := kube.Get(context.Background(), ctrlclient.ObjectKey{Name: "airlock-demo-code-agent"}, updated); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := unstructured.NestedString(updated.Object, "spec", "spiffeIDTemplate"); got != codeAgentIdentity {
+		t.Fatalf("spiffeIDTemplate = %q, want %q", got, codeAgentIdentity)
+	}
+	if got, _, _ := unstructured.NestedString(updated.Object, "spec", "podSelector", "matchLabels", "app.kubernetes.io/name"); got != "airlock-proxy-worker" {
+		t.Fatalf("pod selector = %q, want airlock-proxy-worker", got)
 	}
 }
 
 func TestReconcileSPIREReplacesExistingClusterSPIFFEIDSpec(t *testing.T) {
-	store, err := LoadPolicyStoreWithSecretProviderConfigs(
-		[]string{filepath.Join("..", "..", "fixtures", "policies", "valid-vault-provider-ref.yaml")},
-		[]string{filepath.Join("..", "..", "fixtures", "workloads", "code-agent-vault.yaml")},
-		[]string{filepath.Join("..", "..", "fixtures", "secret-provider-configs", "default-vault.yaml")},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var patch []map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPatch || r.URL.Path != "/apis/spire.spiffe.io/v1alpha1/clusterspiffeids/airlock-code-agent" {
-			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
-		}
-		if got, want := r.Header.Get("Content-Type"), "application/json-patch+json"; got != want {
-			t.Fatalf("content-type = %q, want %q", got, want)
-		}
-		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
-			t.Fatal(err)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	_, err = ReconcileSPIRE(context.Background(), store, SPIREReconcileOptions{
-		Kubernetes: KubernetesPolicySourceOptions{
-			APIServerURL: server.URL,
-			HTTPClient:   server.Client(),
+	store := mustSPIREPolicyStore(t)
+	existing := newClusterSPIFFEIDUnstructured()
+	existing.SetName("airlock-demo-code-agent")
+	existing.SetLabels(map[string]string{
+		"airlock.dev/managed-by":  "airlock-control-plane",
+		"airlock.dev/policy-name": "stale",
+	})
+	existing.Object["spec"] = map[string]any{
+		"spiffeIDTemplate": "stale",
+		"podSelector": map[string]any{
+			"matchLabels": map[string]any{"stale": "true"},
 		},
-		ClassName: "spire-system-spire",
-		PodLabel:  "airlock.dev/proxy-worker",
-		PodValue:  "true",
+	}
+	kube := newSPIREFakeClient(t, existing)
+
+	_, err := ReconcileSPIRE(context.Background(), store, SPIREReconcileOptions{
+		Client:   kube,
+		PodLabel: "airlock.dev/proxy-worker",
+		PodValue: "true",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(patch) != 2 {
-		t.Fatalf("patch operations = %d, want 2", len(patch))
+
+	updated := newClusterSPIFFEIDUnstructured()
+	if err := kube.Get(context.Background(), ctrlclient.ObjectKey{Name: "airlock-demo-code-agent"}, updated); err != nil {
+		t.Fatal(err)
 	}
-	if got, want := patch[1]["op"], "replace"; got != want {
-		t.Fatalf("spec patch op = %q, want %q", got, want)
+	if _, ok := updated.GetLabels()["airlock.dev/policy-name"]; ok {
+		t.Fatalf("updated ClusterSPIFFEID kept stale policy-name label: %#v", updated.GetLabels())
 	}
-	spec, ok := patch[1]["value"].(map[string]any)
-	if !ok {
-		t.Fatalf("spec patch value = %#v, want object", patch[1]["value"])
+	if got, _, _ := unstructured.NestedString(updated.Object, "spec", "podSelector", "matchLabels", "airlock.dev/proxy-worker"); got != "true" {
+		t.Fatalf("pod selector = %q, want true", got)
 	}
-	podSelector, ok := spec["podSelector"].(map[string]any)
-	if !ok {
-		t.Fatalf("podSelector = %#v, want object", spec["podSelector"])
-	}
-	matchLabels, ok := podSelector["matchLabels"].(map[string]any)
-	if !ok {
-		t.Fatalf("matchLabels = %#v, want object", podSelector["matchLabels"])
-	}
-	if got, want := matchLabels["airlock.dev/proxy-worker"], "true"; got != want {
-		t.Fatalf("pod selector = %q, want %q", got, want)
-	}
-	if _, ok := matchLabels["app.kubernetes.io/name"]; ok {
-		t.Fatalf("pod selector kept stale app.kubernetes.io/name label: %#v", matchLabels)
+	if _, ok, _ := unstructured.NestedString(updated.Object, "spec", "podSelector", "matchLabels", "stale"); ok {
+		t.Fatalf("pod selector kept stale label: %#v", updated.Object["spec"])
 	}
 }
 
 func TestReconcileSPIREGarbageCollectsStaleManagedClusterSPIFFEIDs(t *testing.T) {
-	store, err := LoadPolicyStoreWithSecretProviderConfigs(
-		[]string{filepath.Join("..", "..", "fixtures", "policies", "valid-vault-provider-ref.yaml")},
-		[]string{filepath.Join("..", "..", "fixtures", "workloads", "code-agent-vault.yaml")},
-		[]string{filepath.Join("..", "..", "fixtures", "secret-provider-configs", "default-vault.yaml")},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	deleted := map[string]bool{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPatch && r.URL.Path == "/apis/spire.spiffe.io/v1alpha1/clusterspiffeids/airlock-code-agent":
-			w.WriteHeader(http.StatusOK)
-		case r.Method == http.MethodGet && r.URL.Path == "/apis/spire.spiffe.io/v1alpha1/clusterspiffeids":
-			if got, want := r.URL.Query().Get("labelSelector"), "airlock.dev/managed-by=airlock-control-plane"; got != want {
-				t.Fatalf("labelSelector = %q, want %q", got, want)
-			}
-			writeTestJSON(t, w, map[string]any{
-				"items": []any{
-					map[string]any{
-						"metadata": map[string]any{"name": "airlock-code-agent"},
-					},
-					map[string]any{
-						"metadata": map[string]any{"name": "airlock-old-policy"},
-					},
-				},
-			})
-		case r.Method == http.MethodDelete && r.URL.Path == "/apis/spire.spiffe.io/v1alpha1/clusterspiffeids/airlock-old-policy":
-			deleted["airlock-old-policy"] = true
-			w.WriteHeader(http.StatusOK)
-		default:
-			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
-		}
-	}))
-	defer server.Close()
+	store := mustSPIREPolicyStore(t)
+	desired := newClusterSPIFFEIDUnstructured()
+	desired.SetName("airlock-demo-code-agent")
+	desired.SetLabels(map[string]string{"airlock.dev/managed-by": "airlock-control-plane"})
+	stale := newClusterSPIFFEIDUnstructured()
+	stale.SetName("airlock-old-policy")
+	stale.SetLabels(map[string]string{"airlock.dev/managed-by": "airlock-control-plane"})
+	kube := newSPIREFakeClient(t, desired, stale)
 
 	result, err := ReconcileSPIRE(context.Background(), store, SPIREReconcileOptions{
-		Kubernetes: KubernetesPolicySourceOptions{
-			APIServerURL: server.URL,
-			HTTPClient:   server.Client(),
-		},
+		Client:         kube,
 		GarbageCollect: true,
 	})
 	if err != nil {
@@ -187,7 +142,71 @@ func TestReconcileSPIREGarbageCollectsStaleManagedClusterSPIFFEIDs(t *testing.T)
 	if result.DeletedClusterSPIFFEIDs != 1 {
 		t.Fatalf("DeletedClusterSPIFFEIDs = %d, want 1", result.DeletedClusterSPIFFEIDs)
 	}
-	if !deleted["airlock-old-policy"] {
-		t.Fatalf("stale ClusterSPIFFEID was not deleted")
+
+	deleted := newClusterSPIFFEIDUnstructured()
+	err = kube.Get(context.Background(), ctrlclient.ObjectKey{Name: "airlock-old-policy"}, deleted)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("stale ClusterSPIFFEID get error = %v, want not found", err)
 	}
+}
+
+func TestReconcileDoesNotCollideAcrossNamespaces(t *testing.T) {
+	dev := policy.CompiledPolicy{
+		PolicyName: "demo",
+		Workload: policy.WorkloadIdentity{
+			Namespace: "dev",
+			SPIFFEID:  "spiffe://airlock.local/ns/dev/sa/code-agent/component/airlock-proxy-worker",
+		},
+	}
+	prod := dev
+	prod.Workload.Namespace = "prod"
+	prod.Workload.SPIFFEID = "spiffe://airlock.local/ns/prod/sa/code-agent/component/airlock-proxy-worker"
+
+	devObject, err := clusterSPIFFEIDForWorkload(dev, SPIREReconcileOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prodObject, err := clusterSPIFFEIDForWorkload(prod, SPIREReconcileOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if devObject.Metadata.Name == prodObject.Metadata.Name {
+		t.Fatalf("ClusterSPIFFEID names collided: %q", devObject.Metadata.Name)
+	}
+	if got, want := devObject.Metadata.Name, "airlock-dev-demo"; got != want {
+		t.Fatalf("dev name = %q, want %q", got, want)
+	}
+	if got, want := prodObject.Metadata.Name, "airlock-prod-demo"; got != want {
+		t.Fatalf("prod name = %q, want %q", got, want)
+	}
+	if got, want := vaultPolicyName(dev), "airlock-dev-demo"; got != want {
+		t.Fatalf("dev Vault policy = %q, want %q", got, want)
+	}
+	if got, want := vaultPolicyName(prod), "airlock-prod-demo"; got != want {
+		t.Fatalf("prod Vault policy = %q, want %q", got, want)
+	}
+}
+
+func mustSPIREPolicyStore(t *testing.T) *PolicyStore {
+	t.Helper()
+	store, err := LoadPolicyStoreWithSecretProviderConfigs(
+		[]string{filepath.Join("..", "..", "fixtures", "policies", "valid-vault-provider-ref.yaml")},
+		[]string{filepath.Join("..", "..", "fixtures", "workloads", "code-agent-vault.yaml")},
+		[]string{filepath.Join("..", "..", "fixtures", "secret-provider-configs", "default-vault.yaml")},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func newSPIREFakeClient(t *testing.T, objects ...ctrlclient.Object) ctrlclient.Client {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	scheme.AddKnownTypeWithName(spireClusterSPIFFEIDGVK, &unstructured.Unstructured{})
+	scheme.AddKnownTypeWithName(spireClusterSPIFFEIDListGVK, &unstructured.UnstructuredList{})
+	return fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(objects...).
+		Build()
 }

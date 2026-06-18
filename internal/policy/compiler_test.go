@@ -2,31 +2,26 @@ package policy
 
 import (
 	"encoding/json"
+	"flag"
 	"os"
 	"path/filepath"
-	"reflect"
-	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
+
+var updateGolden = flag.Bool("update", false, "update compiler golden fixtures")
 
 func TestCompileValidFixture(t *testing.T) {
 	workload := loadWorkloadFixture(t, "code-agent.yaml")
 	policies := []AirlockPolicy{loadPolicyFixture(t, "valid.yaml")}
 
 	compiled, err := CompileWorkload(workload, policies)
-	if err != nil {
-		t.Fatalf("CompileWorkload() error = %v", err)
-	}
+	require.NoError(t, err)
 
-	got := mustJSONValue(t, compiled)
-	want := mustReadJSONFixture(t, "valid.json")
-	if !reflect.DeepEqual(got, want) {
-		gotJSON, _ := json.MarshalIndent(got, "", "  ")
-		wantJSON, _ := json.MarshalIndent(want, "", "  ")
-		t.Fatalf("compiled policy mismatch\ngot:\n%s\nwant:\n%s", gotJSON, wantJSON)
-	}
+	assertGoldenJSON(t, "valid.golden.json", compiled)
 }
 
 func TestCompileWithSecretProviderResolvesVaultDefaults(t *testing.T) {
@@ -35,27 +30,16 @@ func TestCompileWithSecretProviderResolvesVaultDefaults(t *testing.T) {
 	provider := loadSecretProviderConfigFixture(t, "default-vault.yaml")
 
 	compiled, err := CompileWorkloadWithSecretProvider(workload, policies, &provider)
-	if err != nil {
-		t.Fatalf("CompileWorkloadWithSecretProvider() error = %v", err)
-	}
+	require.NoError(t, err)
 
-	if compiled.SecretProvider == nil || compiled.SecretProvider.Vault == nil {
-		t.Fatal("compiled secret provider is nil")
-	}
-	if got, want := compiled.SecretProvider.Vault.Role, "airlock-demo-code-agent"; got != want {
-		t.Fatalf("role = %q, want %q", got, want)
-	}
-	if got, want := compiled.SecretProvider.Vault.Address, "http://vault.vault.svc.cluster.local:8200"; got != want {
-		t.Fatalf("address = %q, want %q", got, want)
-	}
+	require.NotNil(t, compiled.SecretProvider)
+	require.NotNil(t, compiled.SecretProvider.Vault)
+	assert.Equal(t, "airlock-demo-code-agent", compiled.SecretProvider.Vault.Role)
+	assert.Equal(t, "http://vault.vault.svc.cluster.local:8200", compiled.SecretProvider.Vault.Address)
 
 	ref := compiled.Egress[0].Rewrites[0].ValueFrom
-	if got, want := ref.Mount, "secret"; got != want {
-		t.Fatalf("resolved mount = %q, want %q", got, want)
-	}
-	if got, want := ref.Engine, "kv-v2"; got != want {
-		t.Fatalf("resolved engine = %q, want %q", got, want)
-	}
+	assert.Equal(t, "secret", ref.Mount)
+	assert.Equal(t, "kv-v2", ref.Engine)
 }
 
 func TestCompileWithSecretProviderAppliesVaultPathPrefix(t *testing.T) {
@@ -65,14 +49,29 @@ func TestCompileWithSecretProviderAppliesVaultPathPrefix(t *testing.T) {
 	provider.Spec.Vault.Defaults.PathPrefix = "/prod/"
 
 	compiled, err := CompileWorkloadWithSecretProvider(workload, policies, &provider)
-	if err != nil {
-		t.Fatalf("CompileWorkloadWithSecretProvider() error = %v", err)
-	}
+	require.NoError(t, err)
 
 	ref := compiled.Egress[0].Rewrites[0].ValueFrom
-	if got, want := ref.Path, "prod/airlock/openai/code-agent"; got != want {
-		t.Fatalf("resolved path = %q, want %q", got, want)
-	}
+	assert.Equal(t, "prod/airlock/openai/code-agent", ref.Path)
+}
+
+func TestCompileWithSecretProviderDoesNotMutateInputPolicies(t *testing.T) {
+	workload := loadWorkloadFixture(t, "code-agent-vault.yaml")
+	policies := []AirlockPolicy{loadPolicyFixture(t, "valid-vault-provider-ref.yaml")}
+	original := mustJSONValue(t, policies)
+
+	firstProvider := loadSecretProviderConfigFixture(t, "default-vault.yaml")
+	firstProvider.Spec.Vault.Defaults.PathPrefix = "prod"
+	_, err := CompileWorkloadWithSecretProvider(workload, policies, &firstProvider)
+	require.NoError(t, err)
+	assert.Equal(t, original, mustJSONValue(t, policies))
+
+	secondProvider := loadSecretProviderConfigFixture(t, "default-vault.yaml")
+	secondProvider.Spec.Vault.Defaults.PathPrefix = "dev"
+	compiled, err := CompileWorkloadWithSecretProvider(workload, policies, &secondProvider)
+	require.NoError(t, err)
+	assert.Equal(t, original, mustJSONValue(t, policies))
+	assert.Equal(t, "dev/airlock/openai/code-agent", compiled.Egress[0].Rewrites[0].ValueFrom.Path)
 }
 
 func TestValidateSecretProviderRejectsUnsafeVaultPathPrefix(t *testing.T) {
@@ -80,12 +79,8 @@ func TestValidateSecretProviderRejectsUnsafeVaultPathPrefix(t *testing.T) {
 	provider.Spec.Vault.Defaults.PathPrefix = "auth/prod"
 
 	err := ValidateSecretProviderConfig(provider)
-	if err == nil {
-		t.Fatal("ValidateSecretProviderConfig() error = nil")
-	}
-	if !strings.Contains(err.Error(), "pathPrefix cannot target sys/ or auth/") {
-		t.Fatalf("ValidateSecretProviderConfig() error = %q, want unsafe pathPrefix", err.Error())
-	}
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "pathPrefix cannot target sys/ or auth/")
 }
 
 func TestCompileAllowsEmptyEgressAsDenyAllPolicy(t *testing.T) {
@@ -93,24 +88,16 @@ func TestCompileAllowsEmptyEgressAsDenyAllPolicy(t *testing.T) {
 	policies := []AirlockPolicy{loadPolicyFixture(t, "deny-all.yaml")}
 
 	compiled, err := CompileWorkload(workload, policies)
-	if err != nil {
-		t.Fatalf("CompileWorkload() error = %v", err)
-	}
-	if len(compiled.Egress) != 0 {
-		t.Fatalf("compiled egress length = %d, want 0", len(compiled.Egress))
-	}
+	require.NoError(t, err)
+	assert.Empty(t, compiled.Egress)
 }
 
 func TestCompileWorkloadRejectsMissingPolicyRef(t *testing.T) {
 	workload := loadWorkloadFixture(t, "code-agent.yaml")
 
 	_, err := CompileWorkload(workload, nil)
-	if err == nil {
-		t.Fatal("CompileWorkload() error = nil")
-	}
-	if !strings.Contains(err.Error(), "airlock-system/openai-api not found") {
-		t.Fatalf("CompileWorkload() error = %q, want missing policy ref", err.Error())
-	}
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "airlock-system/openai-api not found")
 }
 
 func TestCompileWorkloadRejectsDuplicateEgressRuleNames(t *testing.T) {
@@ -121,12 +108,42 @@ func TestCompileWorkloadRejectsDuplicateEgressRuleNames(t *testing.T) {
 	duplicate.Metadata.Name = "duplicate-openai-api"
 
 	_, err := CompileWorkload(workload, []AirlockPolicy{policy, duplicate})
-	if err == nil {
-		t.Fatal("CompileWorkload() error = nil")
-	}
-	if !strings.Contains(err.Error(), `egress rule "openai-api"`) {
-		t.Fatalf("CompileWorkload() error = %q, want duplicate egress rule", err.Error())
-	}
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `egress rule "openai-api"`)
+}
+
+func TestValidateRejectsDuplicateEgressRuleNamesWithinPolicy(t *testing.T) {
+	input := loadPolicyFixture(t, "valid.yaml")
+	input.Spec.Egress = append(input.Spec.Egress, input.Spec.Egress[0])
+
+	err := Validate(input)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "duplicates egress rule openai-api")
+}
+
+func TestCompileNormalizesSchemeAndHost(t *testing.T) {
+	workload := loadWorkloadFixture(t, "code-agent.yaml")
+	input := loadPolicyFixture(t, "valid.yaml")
+	input.Spec.Egress[0].Scheme = "HTTPS"
+	input.Spec.Egress[0].Host = "API.OPENAI.COM"
+
+	compiled, err := CompileWorkload(workload, []AirlockPolicy{input})
+	require.NoError(t, err)
+	assert.Equal(t, "https", compiled.Egress[0].Scheme)
+	assert.Equal(t, "api.openai.com", compiled.Egress[0].Host)
+}
+
+func TestNormalizePolicyNormalizesSchemeAndHostWithoutMutatingInput(t *testing.T) {
+	input := loadPolicyFixture(t, "valid.yaml")
+	input.Spec.Egress[0].Scheme = "HTTPS"
+	input.Spec.Egress[0].Host = "API.OPENAI.COM"
+
+	normalized := NormalizePolicy(input)
+
+	assert.Equal(t, "https", normalized.Spec.Egress[0].Scheme)
+	assert.Equal(t, "api.openai.com", normalized.Spec.Egress[0].Host)
+	assert.Equal(t, "HTTPS", input.Spec.Egress[0].Scheme)
+	assert.Equal(t, "API.OPENAI.COM", input.Spec.Egress[0].Host)
 }
 
 func TestInvalidFixtures(t *testing.T) {
@@ -140,15 +157,9 @@ func TestInvalidFixtures(t *testing.T) {
 	for name, want := range tests {
 		t.Run(name, func(t *testing.T) {
 			err := Validate(loadPolicyFixture(t, name))
-			if err == nil {
-				t.Fatal("Validate() error = nil")
-			}
-			if !IsValidationError(err) {
-				t.Fatalf("Validate() error type = %T, want ValidationError", err)
-			}
-			if !strings.Contains(err.Error(), want) {
-				t.Fatalf("Validate() error = %q, want substring %q", err.Error(), want)
-			}
+			require.Error(t, err)
+			require.True(t, IsValidationError(err), "error type = %T", err)
+			require.Contains(t, err.Error(), want)
 		})
 	}
 }
@@ -157,14 +168,10 @@ func loadPolicyFixture(t *testing.T, name string) AirlockPolicy {
 	t.Helper()
 
 	data, err := os.ReadFile(filepath.Join("..", "..", "fixtures", "policies", name))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	var out AirlockPolicy
-	if err := yaml.Unmarshal(data, &out); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, yaml.Unmarshal(data, &out))
 	return out
 }
 
@@ -172,14 +179,10 @@ func loadWorkloadFixture(t *testing.T, name string) AirlockWorkload {
 	t.Helper()
 
 	data, err := os.ReadFile(filepath.Join("..", "..", "fixtures", "workloads", name))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	var out AirlockWorkload
-	if err := yaml.Unmarshal(data, &out); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, yaml.Unmarshal(data, &out))
 	return out
 }
 
@@ -187,29 +190,36 @@ func loadSecretProviderConfigFixture(t *testing.T, name string) SecretProviderCo
 	t.Helper()
 
 	data, err := os.ReadFile(filepath.Join("..", "..", "fixtures", "secret-provider-configs", name))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	var out SecretProviderConfig
-	if err := yaml.Unmarshal(data, &out); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, yaml.Unmarshal(data, &out))
 	return out
 }
 
-func mustReadJSONFixture(t *testing.T, name string) any {
+func assertGoldenJSON(t *testing.T, name string, value any) {
 	t.Helper()
 
-	data, err := os.ReadFile(filepath.Join("..", "..", "fixtures", "compiled", name))
-	if err != nil {
-		t.Fatal(err)
+	path := filepath.Join("..", "..", "fixtures", "compiler", name)
+	if *updateGolden {
+		data, err := json.MarshalIndent(value, "", "  ")
+		require.NoError(t, err)
+		data = append(data, '\n')
+		require.NoError(t, os.WriteFile(path, data, 0o644))
 	}
+	got := mustJSONValue(t, value)
+	want := mustReadJSONFixture(t, path)
+	assert.Equal(t, want, got)
+}
+
+func mustReadJSONFixture(t *testing.T, path string) any {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
 
 	var out any
-	if err := json.Unmarshal(data, &out); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, json.Unmarshal(data, &out))
 	return out
 }
 
@@ -217,13 +227,9 @@ func mustJSONValue(t *testing.T, value any) any {
 	t.Helper()
 
 	data, err := json.Marshal(value)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	var out any
-	if err := json.Unmarshal(data, &out); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, json.Unmarshal(data, &out))
 	return out
 }

@@ -1,0 +1,12 @@
+apiVersion: airlock.dev/v1alpha1
+kind: AirlockWorkload
+metadata:
+  name: compose-curl
+  namespace: airlock-system
+spec:
+  workload:
+    spiffeId: spiffe://airlock.local/compose/control-plane-enrollment/component/airlock-proxy-worker
+    namespace: compose
+    serviceAccount: curl-workload
+  policyRefs:
+    - name: demo-egress

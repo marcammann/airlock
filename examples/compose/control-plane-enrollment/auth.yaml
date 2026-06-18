@@ -1,0 +1,35 @@
+version: airlock.dev/v1alpha1
+auth:
+  enrollment:
+    defaultTTL: 2m
+    maxTTL: 10m
+    providers:
+      - name: local-dispatchers
+        type: apiKey
+        keys:
+          - id: compose
+            env: AIRLOCK_DISPATCHER_API_KEY
+    grants:
+      - subject: key:compose
+        permissions: [enrollment:create]
+        workloads:
+          - namespace: airlock-system
+            name: compose-curl
+  admin:
+    providers:
+      - name: local-admin
+        type: apiKey
+        keys:
+          - id: console
+            value: compose-console-token
+    rbac:
+      roleBindings:
+        - subject: key:console
+          roles: [viewer]
+      roles:
+        viewer:
+          permissions:
+            - policy:read
+            - workload:read
+            - proxy:read
+            - event:read

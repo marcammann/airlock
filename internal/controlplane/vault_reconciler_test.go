@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -24,6 +25,7 @@ func TestReconcileVaultWritesACLPolicyAndJWTRole(t *testing.T) {
 		Policy string `json:"policy"`
 	}
 	var roleBody vaultRole
+	var audit bytes.Buffer
 	requests := []string{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.Method+" "+r.URL.Path)
@@ -32,7 +34,7 @@ func TestReconcileVaultWritesACLPolicyAndJWTRole(t *testing.T) {
 		}
 
 		switch r.URL.Path {
-		case "/v1/sys/policies/acl/airlock-code-agent":
+		case "/v1/sys/policies/acl/airlock-demo-code-agent":
 			if err := json.NewDecoder(r.Body).Decode(&policyBody); err != nil {
 				t.Fatal(err)
 			}
@@ -47,15 +49,21 @@ func TestReconcileVaultWritesACLPolicyAndJWTRole(t *testing.T) {
 	}))
 	defer server.Close()
 
-	for workload, compiled := range store.byWorkload {
+	compiledPolicies := store.Policies()
+	for i, compiled := range compiledPolicies {
 		if compiled.SecretProvider != nil && compiled.SecretProvider.Vault != nil {
 			compiled.SecretProvider.Vault.Address = server.URL
-			store.byWorkload[workload] = compiled
+			compiledPolicies[i] = compiled
 		}
+	}
+	store, err = NewPolicyStoreFromCompiled(compiledPolicies)
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	result, err := ReconcileVault(context.Background(), store, VaultReconcileOptions{
 		AdminToken: "root",
+		Audit:      &audit,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -63,7 +71,7 @@ func TestReconcileVaultWritesACLPolicyAndJWTRole(t *testing.T) {
 	if result.Policies != 1 || result.Roles != 1 {
 		t.Fatalf("result = %+v, want 1 policy and 1 role", result)
 	}
-	if got, want := strings.Join(requests, ","), "POST /v1/sys/policies/acl/airlock-code-agent,POST /v1/auth/jwt/role/airlock-demo-code-agent"; got != want {
+	if got, want := strings.Join(requests, ","), "PUT /v1/sys/policies/acl/airlock-demo-code-agent,PUT /v1/auth/jwt/role/airlock-demo-code-agent"; got != want {
 		t.Fatalf("requests = %q, want %q", got, want)
 	}
 	if !strings.Contains(policyBody.Policy, `path "secret/data/airlock/openai/code-agent"`) {
@@ -75,8 +83,44 @@ func TestReconcileVaultWritesACLPolicyAndJWTRole(t *testing.T) {
 	if got, want := strings.Join(roleBody.BoundAudiences, ","), "vault"; got != want {
 		t.Fatalf("bound_audiences = %q, want %q", got, want)
 	}
-	if got, want := strings.Join(roleBody.TokenPolicies, ","), "airlock-code-agent"; got != want {
+	if got, want := strings.Join(roleBody.TokenPolicies, ","), "airlock-demo-code-agent"; got != want {
 		t.Fatalf("token_policies = %q, want %q", got, want)
+	}
+	auditLog := audit.String()
+	if strings.Contains(auditLog, "airlock/openai/code-agent") || strings.Contains(auditLog, "secretPaths") {
+		t.Fatalf("audit log = %q, want no secret paths", auditLog)
+	}
+	if !strings.Contains(auditLog, `"secretCount":1`) {
+		t.Fatalf("audit log = %q, want secretCount", auditLog)
+	}
+}
+
+func TestVaultACLPolicyRejectsTraversalPath(t *testing.T) {
+	store, err := LoadPolicyStoreWithSecretProviderConfigs(
+		[]string{filepath.Join("..", "..", "fixtures", "policies", "valid-vault-provider-ref.yaml")},
+		[]string{filepath.Join("..", "..", "fixtures", "workloads", "code-agent-vault.yaml")},
+		[]string{filepath.Join("..", "..", "fixtures", "secret-provider-configs", "default-vault.yaml")},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled := store.Policies()[0]
+
+	for _, secretPath := range []string{
+		"../../sys/raw/secret",
+		"auth/foo",
+		"foo/../bar",
+	} {
+		t.Run(secretPath, func(t *testing.T) {
+			compiled.Egress[0].Rewrites[0].ValueFrom.Path = secretPath
+			_, _, err := vaultACLPolicy(compiled)
+			if err == nil {
+				t.Fatal("vaultACLPolicy() error = nil, want unsafe path error")
+			}
+			if !strings.Contains(err.Error(), "unsafe Vault secret path") {
+				t.Fatalf("error = %q, want unsafe path", err)
+			}
+		})
 	}
 }
 

@@ -10,6 +10,5 @@ Apply it after installing Airlock and loading the proxy worker image:
 kubectl apply -k examples/k8s/basic-egress
 ```
 
-The Makefile target `deploy-demo` applies this example and waits for the core
-deployments to roll out.
-
+For a scripted smoke, use `scripts/smoke/k8s-egress-smoke.sh` after the demo
+cluster is installed.

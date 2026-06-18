@@ -148,9 +148,9 @@ The admin API is separate from the worker policy API. Worker SPIFFE auth should
 not become user/admin auth.
 
 The control plane supports separate auth planes. In the current self-managed
-WebUI model, `--admin-auth=dev-token` or `--admin-auth=oidc` authenticates the
-WebUI service token. In the preferred broker model, `--admin-auth=oidc`
-authenticates the actual user access token forwarded by the WebUI:
+WebUI model, an admin provider in `auth.yaml` authenticates the WebUI service
+token. In the preferred broker model, `--admin-auth=oidc` authenticates the
+actual user access token forwarded by the WebUI:
 
 ```text
 --worker-auth=spiffe

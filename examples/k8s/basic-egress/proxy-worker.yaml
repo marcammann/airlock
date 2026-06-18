@@ -27,8 +27,6 @@ spec:
             - http:builtin@127.0.0.1:18080
             - --control-plane-url
             - https://airlock-control-plane.airlock-system.svc.cluster.local:8443
-            - --control-plane-auth
-            - spiffe
             - --control-plane-server-id
             - spiffe://airlock.local/ns/airlock-system/sa/airlock-control-plane
             - --workload-identity

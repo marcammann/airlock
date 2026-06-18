@@ -1,0 +1,56 @@
+version: airlock.dev/v1alpha1
+policyName: standalone-llm-egress
+workload:
+  spiffeId: spiffe://airlock.local/compose/standalone/component/airlock-proxy-worker
+  namespace: compose
+  serviceAccount: llm-app
+egress:
+  - name: openai-api
+    scheme: https
+    host: api.openai.com
+    port: 443
+    sourcePolicy:
+      name: standalone-llm-egress
+      namespace: compose
+  - name: openai-files
+    scheme: https
+    host: files.openai.com
+    port: 443
+    sourcePolicy:
+      name: standalone-llm-egress
+      namespace: compose
+  - name: openai-auth
+    scheme: https
+    host: auth.openai.com
+    port: 443
+    sourcePolicy:
+      name: standalone-llm-egress
+      namespace: compose
+  - name: codex-chatgpt
+    scheme: https
+    host: chatgpt.com
+    port: 443
+    sourcePolicy:
+      name: standalone-llm-egress
+      namespace: compose
+  - name: anthropic-api
+    scheme: https
+    host: api.anthropic.com
+    port: 443
+    sourcePolicy:
+      name: standalone-llm-egress
+      namespace: compose
+  - name: openrouter-api
+    scheme: https
+    host: openrouter.ai
+    port: 443
+    sourcePolicy:
+      name: standalone-llm-egress
+      namespace: compose
+  - name: google-ai-api
+    scheme: https
+    host: generativelanguage.googleapis.com
+    port: 443
+    sourcePolicy:
+      name: standalone-llm-egress
+      namespace: compose

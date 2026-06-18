@@ -3,10 +3,9 @@
 Runnable Docker Compose scenarios live here. These examples are intended for
 local workflow testing without a Kubernetes cluster.
 
-- `git`: Git checkout through Airlock, with builtin, Envoy, and no-control-plane
-  variants.
-- `proxy-observability`: long-running proxy/client setup for heartbeats,
-  proxy status, and allow/deny counters.
-- `opencode-headless`: OpenCode server routed through Airlock.
-- `codex-app-server`: Codex app-server routed through Airlock.
-
+- `standalone`: no control plane, builtin HTTP proxy, with `opencode` and
+  `codex` profiles.
+- `control-plane-enrollment`: control plane plus API-key enrollment, builtin
+  HTTP proxy, one allowed curl and one denied curl.
+- `spiffe-envoy`: SPIRE/SPIFFE control-plane auth, Envoy ext_proc data path,
+  one allowed curl and one denied curl.

@@ -1,0 +1,23 @@
+version: airlock.dev/v1alpha1
+policyName: daytona-soft-sandbox-openai
+workload:
+  spiffeId: spiffe://airlock.local/daytona/soft-sandbox/component/airlock-proxy-worker
+  namespace: daytona
+  serviceAccount: soft-sandbox
+egress:
+  - name: openai-api
+    scheme: https
+    host: api.openai.com
+    port: 443
+    sourcePolicy:
+      name: daytona-soft-sandbox-openai
+      namespace: daytona
+    rewrites:
+      - target: header
+        name: Authorization
+        valueTemplate: "Bearer {{secret}}"
+        valueFrom:
+          provider: file
+          name: openai-api-key
+          file: /run/airlock/secrets/openai-api-key
+

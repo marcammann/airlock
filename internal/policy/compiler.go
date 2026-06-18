@@ -4,6 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/marcammann/airlock/internal/names"
+	"github.com/marcammann/airlock/internal/vaultpath"
 )
 
 var allowedSecretProviders = map[string]struct{}{
@@ -12,18 +15,22 @@ var allowedSecretProviders = map[string]struct{}{
 	"vault": {},
 }
 
+// ValidationError reports one or more policy validation problems.
 type ValidationError struct {
 	Problems []string
 }
 
+// Error formats validation problems as a single message.
 func (e *ValidationError) Error() string {
 	return strings.Join(e.Problems, "; ")
 }
 
+// CompileWorkload compiles a workload using referenced AirlockPolicy resources.
 func CompileWorkload(in AirlockWorkload, policies []AirlockPolicy) (CompiledPolicy, error) {
 	return CompileWorkloadWithSecretProvider(in, policies, nil)
 }
 
+// CompileWorkloadWithSecretProvider compiles a workload with optional provider defaults.
 func CompileWorkloadWithSecretProvider(in AirlockWorkload, policies []AirlockPolicy, provider *SecretProviderConfig) (CompiledPolicy, error) {
 	if err := ValidateWorkload(in); err != nil {
 		return CompiledPolicy{}, err
@@ -63,6 +70,7 @@ func CompileWorkloadWithSecretProvider(in AirlockWorkload, policies []AirlockPol
 	}, nil
 }
 
+// ValidateSecretProviderConfig validates a SecretProviderConfig resource.
 func ValidateSecretProviderConfig(in SecretProviderConfig) error {
 	var problems []string
 
@@ -96,7 +104,7 @@ func ValidateSecretProviderConfig(in SecretProviderConfig) error {
 	if strings.Contains(in.Spec.Vault.Defaults.PathPrefix, "*") {
 		problems = append(problems, "spec.vault.defaults.pathPrefix cannot contain wildcards")
 	}
-	if isUnsafeVaultPath(in.Spec.Vault.Defaults.PathPrefix) {
+	if vaultpath.IsUnsafe(in.Spec.Vault.Defaults.PathPrefix) {
 		problems = append(problems, "spec.vault.defaults.pathPrefix cannot target sys/ or auth/")
 	}
 
@@ -106,8 +114,10 @@ func ValidateSecretProviderConfig(in SecretProviderConfig) error {
 	return nil
 }
 
+// Validate validates an AirlockPolicy resource.
 func Validate(in AirlockPolicy) error {
 	var problems []string
+	in = NormalizePolicy(in)
 
 	if in.APIVersion != APIVersion {
 		problems = append(problems, fmt.Sprintf("apiVersion must be %q", APIVersion))
@@ -118,8 +128,16 @@ func Validate(in AirlockPolicy) error {
 	if strings.TrimSpace(in.Metadata.Name) == "" {
 		problems = append(problems, "metadata.name is required")
 	}
+	seenRuleNames := map[string]struct{}{}
 	for i, rule := range in.Spec.Egress {
 		prefix := fmt.Sprintf("spec.egress[%d]", i)
+		ruleName := strings.TrimSpace(rule.Name)
+		if ruleName != "" {
+			if _, ok := seenRuleNames[ruleName]; ok {
+				problems = append(problems, prefix+" duplicates egress rule "+ruleName)
+			}
+			seenRuleNames[ruleName] = struct{}{}
+		}
 		problems = append(problems, validateEgressRule(prefix, rule)...)
 	}
 
@@ -129,6 +147,17 @@ func Validate(in AirlockPolicy) error {
 	return nil
 }
 
+// NormalizePolicy returns a copy with normalized comparable fields.
+func NormalizePolicy(in AirlockPolicy) AirlockPolicy {
+	out := clonePolicy(in)
+	for i := range out.Spec.Egress {
+		out.Spec.Egress[i].Scheme = strings.ToLower(strings.TrimSpace(out.Spec.Egress[i].Scheme))
+		out.Spec.Egress[i].Host = strings.ToLower(strings.TrimSpace(out.Spec.Egress[i].Host))
+	}
+	return out
+}
+
+// ValidateWorkload validates an AirlockWorkload resource.
 func ValidateWorkload(in AirlockWorkload) error {
 	var problems []string
 
@@ -174,7 +203,8 @@ func validateEgressRule(prefix string, rule EgressRule) []string {
 	if strings.TrimSpace(rule.Host) == "" {
 		problems = append(problems, prefix+".host is required")
 	}
-	if rule.Scheme != "" && rule.Scheme != "http" && rule.Scheme != "https" {
+	scheme := strings.ToLower(strings.TrimSpace(rule.Scheme))
+	if scheme != "" && scheme != "http" && scheme != "https" {
 		problems = append(problems, prefix+".scheme must be http or https")
 	}
 	if rule.Port > 65535 {
@@ -215,10 +245,7 @@ func validateSecretRef(prefix string, ref SecretRef) []string {
 			problems = append(problems, prefix+".file is required for file secrets")
 		}
 	case "vault":
-		if strings.TrimSpace(ref.Mount) == "" {
-			problems = append(problems, prefix+".mount is required for vault secrets")
-		}
-		if ref.Engine != "kv-v2" {
+		if ref.Engine != "" && ref.Engine != "kv-v2" {
 			problems = append(problems, prefix+".engine must be kv-v2 for vault secrets")
 		}
 		if strings.TrimSpace(ref.Path) == "" {
@@ -227,7 +254,7 @@ func validateSecretRef(prefix string, ref SecretRef) []string {
 		if strings.Contains(ref.Path, "*") {
 			problems = append(problems, prefix+".path cannot contain wildcards")
 		}
-		if isUnsafeVaultPath(ref.Path) {
+		if vaultpath.IsUnsafe(ref.Path) {
 			problems = append(problems, prefix+".path cannot target sys/ or auth/")
 		}
 		if strings.TrimSpace(ref.Key) == "" {
@@ -300,6 +327,8 @@ func mergeEgressRules(policies []AirlockPolicy) ([]EgressRule, error) {
 			}
 			seenRuleNames[ruleName] = source
 			copied := rule
+			copied.Scheme = strings.ToLower(strings.TrimSpace(copied.Scheme))
+			copied.Host = strings.ToLower(strings.TrimSpace(copied.Host))
 			copied.SourcePolicy = &PolicyRef{Name: source.Name, Namespace: source.Namespace}
 			out = append(out, copied)
 		}
@@ -313,7 +342,9 @@ func mergeEgressRules(policies []AirlockPolicy) ([]EgressRule, error) {
 func applyProviderDefaults(in []AirlockPolicy, provider SecretProviderConfig) []AirlockPolicy {
 	defaults := provider.Spec.Vault.Defaults
 	out := make([]AirlockPolicy, len(in))
-	copy(out, in)
+	for i := range in {
+		out[i] = NormalizePolicy(in[i])
+	}
 	for policyIndex := range out {
 		for i := range out[policyIndex].Spec.Egress {
 			for j := range out[policyIndex].Spec.Egress[i].Rewrites {
@@ -332,6 +363,15 @@ func applyProviderDefaults(in []AirlockPolicy, provider SecretProviderConfig) []
 				}
 			}
 		}
+	}
+	return out
+}
+
+func clonePolicy(in AirlockPolicy) AirlockPolicy {
+	out := in
+	out.Spec.Egress = append([]EgressRule(nil), in.Spec.Egress...)
+	for i := range out.Spec.Egress {
+		out.Spec.Egress[i].Rewrites = append([]RewriteRule(nil), in.Spec.Egress[i].Rewrites...)
 	}
 	return out
 }
@@ -368,7 +408,7 @@ func generatedVaultRole(in AirlockWorkload) string {
 	if namespace == "" {
 		namespace = "default"
 	}
-	return "airlock-" + dnsLabelPart(namespace) + "-" + dnsLabelPart(in.Metadata.Name)
+	return names.AirlockClusterResourceName(namespace, in.Metadata.Name)
 }
 
 func policyObjectKey(in AirlockPolicy) string {
@@ -394,34 +434,7 @@ func namespacedKey(namespace string, name string) string {
 	return strings.TrimSpace(namespace) + "/" + strings.TrimSpace(name)
 }
 
-func dnsLabelPart(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	var out strings.Builder
-	lastDash := false
-	for _, ch := range value {
-		valid := (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')
-		if valid {
-			out.WriteRune(ch)
-			lastDash = false
-			continue
-		}
-		if !lastDash {
-			out.WriteByte('-')
-			lastDash = true
-		}
-	}
-	clean := strings.Trim(out.String(), "-")
-	if clean == "" {
-		return "default"
-	}
-	return clean
-}
-
-func isUnsafeVaultPath(path string) bool {
-	clean := strings.Trim(strings.TrimSpace(path), "/")
-	return clean == "sys" || clean == "auth" || strings.HasPrefix(clean, "sys/") || strings.HasPrefix(clean, "auth/")
-}
-
+// IsValidationError reports whether err contains a policy ValidationError.
 func IsValidationError(err error) bool {
 	var target *ValidationError
 	return errors.As(err, &target)

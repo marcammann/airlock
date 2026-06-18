@@ -26,7 +26,11 @@ umask 077
   -keyout "$tmpdir/ca.key" \
   -out "$tmpdir/ca.crt" \
   -days 1 \
-  -subj "/CN=airlock tls smoke ca" >/dev/null 2>&1
+  -sha256 \
+  -subj "/CN=airlock tls smoke ca" \
+  -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign" \
+  -addext "subjectKeyIdentifier=hash" >/dev/null 2>&1
 
 "$OPENSSL" req -newkey rsa:2048 -nodes \
   -keyout "$tmpdir/upstream.key" \

@@ -23,19 +23,19 @@ Run it against the local kind cluster:
 
 ```sh
 export GITHUB_PAT=github_pat_or_classic_pat_with_repo_access
-make github-connect-sds-smoke
+./scripts/smoke/github-connect-sds-smoke.sh
 ```
 
 GitHub documents HTTPS Git authentication as username plus PAT-as-password. If
 your token requires the real account name in the Basic username slot, set:
 
 ```sh
-GITHUB_BASIC_USER=your-github-username make github-connect-sds-smoke
+GITHUB_BASIC_USER=your-github-username ./scripts/smoke/github-connect-sds-smoke.sh
 ```
 
 The target defaults to `marcammann/portfolio`, but can be pointed at another
 repository:
 
 ```sh
-GITHUB_REPO=owner/private-repo make github-connect-sds-smoke
+GITHUB_REPO=owner/private-repo ./scripts/smoke/github-connect-sds-smoke.sh
 ```

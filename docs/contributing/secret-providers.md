@@ -16,16 +16,16 @@ fallback.
 
 ## Current Layout
 
-The proxy worker keeps provider code in `internal/proxyworker`:
+The proxy worker keeps provider code in `internal/proxyworker/secrets`:
 
-- `secret_provider.go`: common `SecretProvider` interface.
-- `secret_provider_env_file.go`: local env/file provider.
-- `secret_provider_factory.go`: policy inspection and provider selection.
-- `secret_provider_vault.go`: Vault provider, auth, preloading, and cache.
-- `vault_client.go`: Vault HTTP API helpers.
+- `provider.go`: common `SecretProvider` interface.
+- `env_file.go`: local env/file provider.
+- `factory.go`: policy inspection and provider selection.
+- `vault_provider.go`: Vault provider, auth, preloading, and cache.
+- `vault_api.go`: Vault API client helpers.
 
-This keeps provider internals separate while avoiding a larger package split
-until the policy model has more than one remote provider.
+This keeps provider internals separate from proxy data-path code while leaving
+provider-specific helpers close to the provider that owns them.
 
 ## Adding A Provider
 
@@ -42,13 +42,14 @@ until the policy model has more than one remote provider.
      not during request processing.
 
 3. Add a provider file.
-   - Prefer `secret_provider_<name>.go`.
+   - Prefer `<name>_provider.go`.
    - Keep backend HTTP/API client helpers in a separate file if they grow.
-   - Redact secret values before logging. Secret coordinates such as mount,
-     path, and key are acceptable only when they are not themselves sensitive.
+   - Redact secret values before logging. Treat secret coordinates such as
+     mount, path, and key as sensitive operational metadata and avoid routine
+     logs, metrics, and trace attributes that expose them.
 
 4. Wire provider selection.
-   - Update `NewSecretProviderForPolicy` in `secret_provider_factory.go`.
+   - Update `NewSecretProviderForPolicy` in `factory.go`.
    - Add a helper like `PolicyHas<Name>SecretRefs` if the provider should only
      initialize when referenced.
 

@@ -1,0 +1,108 @@
+volumes:
+  enrollment-token:
+
+services:
+  control-plane:
+    build:
+      context: ../../..
+      dockerfile: control-plane/Dockerfile
+    command:
+      - --listen=:8080
+      - --admin-listen=:8081
+      - --policy=/airlock/policies/demo-egress.yaml
+      - --workload=/airlock/workloads/demo-workload.yaml
+      - --auth-config=/airlock/auth/auth.yaml
+      - --insecure
+      - --heartbeat-stale-threshold=3
+    environment:
+      AIRLOCK_DISPATCHER_API_KEY: ${AIRLOCK_DISPATCHER_API_KEY:-compose-dispatcher-token}
+    ports:
+      - "127.0.0.1:18210:8080"
+      - "127.0.0.1:18211:8081"
+    volumes:
+      - ./auth.yaml:/airlock/auth/auth.yaml:ro
+      - ./policy/demo-egress.yaml:/airlock/policies/demo-egress.yaml:ro
+      - ./policy/demo-workload.yaml:/airlock/workloads/demo-workload.yaml:ro
+
+  enrollment-token:
+    image: curlimages/curl:8.11.1
+    user: "0:0"
+    depends_on:
+      - control-plane
+    environment:
+      AIRLOCK_DISPATCHER_API_KEY: ${AIRLOCK_DISPATCHER_API_KEY:-compose-dispatcher-token}
+    command:
+      - sh
+      - -ec
+      - |
+        rm -f /run/airlock/enrollment/token
+        until curl -fsS http://control-plane:8080/readyz >/dev/null; do
+          sleep 1
+        done
+        body="$$(curl -fsS \
+          -X POST \
+          -H "Authorization: Bearer $$AIRLOCK_DISPATCHER_API_KEY" \
+          -H "Content-Type: application/json" \
+          -d '{"workload":{"namespace":"airlock-system","name":"compose-curl"},"ttlSeconds":120}' \
+          http://control-plane:8080/v1/enrollments)"
+        token="$$(printf '%s' "$$body" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
+        test -n "$$token"
+        printf '%s' "$$token" >/run/airlock/enrollment/token
+        tail -f /dev/null
+    healthcheck:
+      test: ["CMD", "test", "-s", "/run/airlock/enrollment/token"]
+      interval: 2s
+      timeout: 1s
+      retries: 30
+    volumes:
+      - enrollment-token:/run/airlock/enrollment
+
+  echo:
+    build:
+      context: ../../..
+      dockerfile: examples/compose/_shared/echo-server/Dockerfile
+    networks:
+      default:
+        aliases:
+          - demo.local
+
+  proxy-worker:
+    build:
+      context: ../../..
+      dockerfile: proxy-worker/Dockerfile
+    depends_on:
+      enrollment-token:
+        condition: service_healthy
+      echo:
+        condition: service_started
+    command:
+      - --proxy
+      - http:builtin@0.0.0.0:18080
+      - --control-plane-url
+      - http://control-plane:8080
+      - --enrollment-token-file
+      - /run/airlock/enrollment/token
+      - --heartbeat-interval
+      - 2s
+    volumes:
+      - enrollment-token:/run/airlock/enrollment:ro
+      - ./secrets/demo-secret:/run/airlock/secrets/demo-secret:ro
+
+  curl-workload:
+    image: curlimages/curl:8.11.1
+    depends_on:
+      - proxy-worker
+    command:
+      - sh
+      - -ec
+      - |
+        until curl -fsS --proxy http://proxy-worker:18080 http://demo.local:8080/allowed | grep -q 'x-airlock-demo-secret=compose-secret'; do
+          sleep 1
+        done
+        echo "allowed request passed with proxy-injected secret"
+        if curl -fsS --proxy http://proxy-worker:18080 http://blocked.local:8080/blocked >/tmp/blocked.out 2>/tmp/blocked.err; then
+          echo "blocked request unexpectedly succeeded" >&2
+          cat /tmp/blocked.out >&2
+          exit 1
+        fi
+        echo "denied request failed closed"

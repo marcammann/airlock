@@ -3,34 +3,34 @@ package controlplane
 import (
 	"context"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
+	"fmt"
 	"strings"
 	"testing"
 
+	airlockv1 "github.com/marcammann/airlock/api/v1alpha1"
 	"github.com/marcammann/airlock/internal/policy"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-func TestLoadPolicyStoreFromKubernetes(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/apis/airlock.dev/v1alpha1/namespaces/airlock-system/secretproviderconfigs":
-			writeTestJSON(t, w, map[string]any{"items": []any{defaultVaultProviderConfig()}})
-		case "/apis/airlock.dev/v1alpha1/namespaces/airlock-system/airlockpolicies":
-			writeTestJSON(t, w, map[string]any{"items": []any{codeAgentPolicy()}})
-		case "/apis/airlock.dev/v1alpha1/namespaces/airlock-system/airlockworkloads":
-			writeTestJSON(t, w, map[string]any{"items": []any{codeAgentWorkload()}})
-		default:
-			t.Fatalf("unexpected path %q", r.URL.Path)
-		}
-	}))
-	defer server.Close()
+func TestLoadPolicyStoreFromKubernetesClient(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := airlockv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	kube := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(
+			ptrTo(mustSecretProviderConfig(t, defaultVaultProviderConfig())),
+			ptrTo(mustAirlockPolicy(t, codeAgentPolicy())),
+			ptrTo(mustAirlockWorkload(t, codeAgentWorkload())),
+		).
+		Build()
 
-	store, updates, err := LoadPolicyStoreFromKubernetes(context.Background(), KubernetesPolicySourceOptions{
-		Namespace:    "airlock-system",
-		APIServerURL: server.URL,
-		HTTPClient:   server.Client(),
-	})
+	store, updates, err := LoadPolicyStoreFromKubernetesClient(context.Background(), kube, "airlock-system")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,9 +44,6 @@ func TestLoadPolicyStoreFromKubernetes(t *testing.T) {
 	if got, want := compiled.SecretProvider.Vault.Role, "airlock-demo-code-agent"; got != want {
 		t.Fatalf("role = %q, want %q", got, want)
 	}
-	if got, want := compiled.Egress[0].Rewrites[0].ValueFrom.Mount, "secret"; got != want {
-		t.Fatalf("mount = %q, want %q", got, want)
-	}
 	if got, want := compiled.Egress[0].Rewrites[0].ValueFrom.Path, "prod/airlock/openai/code-agent"; got != want {
 		t.Fatalf("path = %q, want %q", got, want)
 	}
@@ -55,45 +52,164 @@ func TestLoadPolicyStoreFromKubernetes(t *testing.T) {
 	}
 }
 
-func TestPatchAirlockWorkloadStatus(t *testing.T) {
-	var patched map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.Method, http.MethodPatch; got != want {
-			t.Fatalf("method = %q, want %q", got, want)
-		}
-		if got, want := r.URL.Path, "/apis/airlock.dev/v1alpha1/namespaces/airlock-system/airlockworkloads/code-agent/status"; got != want {
-			t.Fatalf("path = %q, want %q", got, want)
-		}
-		if got := r.Header.Get("Content-Type"); !strings.Contains(got, "application/merge-patch+json") {
-			t.Fatalf("content-type = %q, want merge patch", got)
-		}
-		if err := json.NewDecoder(r.Body).Decode(&patched); err != nil {
-			t.Fatal(err)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
+func TestKubernetesClientRejectsOversizedList(t *testing.T) {
+	_, _, err := LoadPolicyStoreFromKubernetesClient(context.Background(), listErrorClient{
+		err: fmt.Errorf("kubernetes list response exceeds 4194304 bytes"),
+	}, "airlock-system")
+	if err == nil {
+		t.Fatal("LoadPolicyStoreFromKubernetesClient() error = nil, want list failure")
+	}
+	if !strings.Contains(err.Error(), "list SecretProviderConfig objects") || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("error = %q, want oversized list failure context", err)
+	}
+}
 
-	input := mustAirlockWorkload(t, codeAgentWorkload())
-	err := PatchAirlockWorkloadStatus(context.Background(), KubernetesPolicySourceOptions{
-		Namespace:    "airlock-system",
-		APIServerURL: server.URL,
-		HTTPClient:   server.Client(),
-	}, input, policy.Status{
-		ObservedGeneration: input.Metadata.Generation,
+func TestPatchAirlockWorkloadStatusWithClient(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := airlockv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	workload := mustAirlockWorkload(t, codeAgentWorkload())
+	kube := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&policy.AirlockWorkload{}).
+		WithObjects(ptrTo(workload)).
+		Build()
+
+	err := PatchAirlockWorkloadStatusWithClient(context.Background(), kube, workload, policy.Status{
+		ObservedGeneration: workload.Metadata.Generation,
 		PolicyHash:         "abc123",
 		Conditions:         []policy.StatusCondition{{Type: "Ready", Status: "True"}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, ok := patched["status"].(map[string]any)
-	if !ok {
-		t.Fatalf("patched = %#v, want status object", patched)
+
+	var out policy.AirlockWorkload
+	if err := kube.Get(context.Background(), ctrlclient.ObjectKey{Namespace: workload.Metadata.Namespace, Name: workload.Metadata.Name}, &out); err != nil {
+		t.Fatal(err)
 	}
-	if got, want := status["observedGeneration"], float64(4); got != want {
-		t.Fatalf("observedGeneration = %#v, want %#v", got, want)
+	if got, want := out.Status.PolicyHash, "abc123"; got != want {
+		t.Fatalf("policyHash = %q, want %q", got, want)
 	}
+	if len(out.Status.Conditions) != 1 || out.Status.Conditions[0].Status != "True" {
+		t.Fatalf("conditions = %+v, want Ready=True", out.Status.Conditions)
+	}
+}
+
+func TestPatchAirlockWorkloadStatusWithClientRetriesConflict(t *testing.T) {
+	assertStatusPatchRetriesConflict(t)
+}
+
+func TestReconcilerRetriesOnConflict(t *testing.T) {
+	assertStatusPatchRetriesConflict(t)
+}
+
+func assertStatusPatchRetriesConflict(t *testing.T) {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	if err := airlockv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	workload := mustAirlockWorkload(t, codeAgentWorkload())
+	base := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&policy.AirlockWorkload{}).
+		WithObjects(ptrTo(workload)).
+		Build()
+	kube := &conflictOnceStatusClient{Client: base}
+
+	err := PatchAirlockWorkloadStatusWithClient(context.Background(), kube, workload, policy.Status{
+		ObservedGeneration: workload.Metadata.Generation,
+		PolicyHash:         "retry-hash",
+		Conditions:         []policy.StatusCondition{{Type: "Ready", Status: "True"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kube.patchAttempts != 2 {
+		t.Fatalf("patchAttempts = %d, want conflict then retry success", kube.patchAttempts)
+	}
+
+	var out policy.AirlockWorkload
+	if err := kube.Get(context.Background(), ctrlclient.ObjectKey{Namespace: workload.Metadata.Namespace, Name: workload.Metadata.Name}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := out.Status.PolicyHash, "retry-hash"; got != want {
+		t.Fatalf("policyHash = %q, want %q", got, want)
+	}
+}
+
+func TestKubernetesPolicySourceDropsInvalidPolicies(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := airlockv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	valid := codeAgentPolicy()
+	invalid := codeAgentPolicy()
+	invalid["metadata"].(map[string]any)["name"] = "invalid"
+	delete(invalid["spec"].(map[string]any)["egress"].([]any)[0].(map[string]any), "host")
+	kube := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(
+			ptrTo(mustSecretProviderConfig(t, defaultVaultProviderConfig())),
+			ptrTo(mustAirlockPolicy(t, valid)),
+			ptrTo(mustAirlockPolicy(t, invalid)),
+			ptrTo(mustAirlockWorkload(t, codeAgentWorkload())),
+		).
+		Build()
+
+	store, _, err := LoadPolicyStoreFromKubernetesClient(context.Background(), kube, "airlock-system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	policies := store.AirlockPolicies()
+	if len(policies) != 1 || policies[0].Metadata.Name != "code-agent" {
+		t.Fatalf("policies = %+v, want only valid code-agent policy", policies)
+	}
+}
+
+type listErrorClient struct {
+	ctrlclient.Client
+	err error
+}
+
+func (c listErrorClient) List(context.Context, ctrlclient.ObjectList, ...ctrlclient.ListOption) error {
+	return c.err
+}
+
+type conflictOnceStatusClient struct {
+	ctrlclient.Client
+	patchAttempts int
+}
+
+func (c *conflictOnceStatusClient) Status() ctrlclient.SubResourceWriter {
+	return &conflictOnceStatusWriter{client: c, delegate: c.Client.Status()}
+}
+
+type conflictOnceStatusWriter struct {
+	client   *conflictOnceStatusClient
+	delegate ctrlclient.SubResourceWriter
+}
+
+func (w *conflictOnceStatusWriter) Create(ctx context.Context, obj ctrlclient.Object, subResource ctrlclient.Object, opts ...ctrlclient.SubResourceCreateOption) error {
+	return w.delegate.Create(ctx, obj, subResource, opts...)
+}
+
+func (w *conflictOnceStatusWriter) Update(ctx context.Context, obj ctrlclient.Object, opts ...ctrlclient.SubResourceUpdateOption) error {
+	return w.delegate.Update(ctx, obj, opts...)
+}
+
+func (w *conflictOnceStatusWriter) Patch(ctx context.Context, obj ctrlclient.Object, patch ctrlclient.Patch, opts ...ctrlclient.SubResourcePatchOption) error {
+	w.client.patchAttempts++
+	if w.client.patchAttempts == 1 {
+		return apierrors.NewConflict(schema.GroupResource{Group: "airlock.dev", Resource: "airlockworkloads"}, obj.GetName(), fmt.Errorf("stale resourceVersion"))
+	}
+	return w.delegate.Patch(ctx, obj, patch, opts...)
+}
+
+func (w *conflictOnceStatusWriter) Apply(ctx context.Context, obj runtime.ApplyConfiguration, opts ...ctrlclient.SubResourceApplyOption) error {
+	return w.delegate.Apply(ctx, obj, opts...)
 }
 
 func defaultVaultProviderConfig() map[string]any {
@@ -190,10 +306,32 @@ func mustAirlockWorkload(t *testing.T, input map[string]any) policy.AirlockWorkl
 	return p
 }
 
-func writeTestJSON(t *testing.T, w http.ResponseWriter, value any) {
+func mustAirlockPolicy(t *testing.T, input map[string]any) policy.AirlockPolicy {
 	t.Helper()
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(value); err != nil {
+	data, err := json.Marshal(input)
+	if err != nil {
 		t.Fatal(err)
 	}
+	var p policy.AirlockPolicy
+	if err := json.Unmarshal(data, &p); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func mustSecretProviderConfig(t *testing.T, input map[string]any) policy.SecretProviderConfig {
+	t.Helper()
+	data, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p policy.SecretProviderConfig
+	if err := json.Unmarshal(data, &p); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func ptrTo[T any](value T) *T {
+	return &value
 }

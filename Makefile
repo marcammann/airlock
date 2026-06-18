@@ -7,10 +7,14 @@ SPIRE_VALUES ?= deploy/helm/spire/values.yaml
 CONTROL_PLANE_IMAGE ?= airlock-control-plane:dev
 PROXY_WORKER_IMAGE ?= airlock-proxy-worker:dev
 WEB_UI_IMAGE ?= airlock-web-ui:dev
-GO_TEST_PACKAGES ?= ./api/... ./cmd/... ./internal/... ./examples/compose/git
+AIRLOCK_ARTIFACT_IMAGE ?= ghcr.io/marcammann/airlock:dev
+AIRLOCK_ARTIFACT_REMOTE_IMAGE ?= ghcr.io/marcammann/airlock:dev
+AIRLOCK_IMAGE_PLATFORMS ?= linux/amd64,linux/arm64
+GO_TEST_PACKAGES ?= ./... ./examples/compose/_shared/echo-server
 SMOKE_SCRIPTS_DIR ?= scripts/smoke
+AIRLOCK_ARTIFACT_DOCKERFILE ?= build/package/Dockerfile.artifacts
 
-.PHONY: kind-up kind-down build-control-plane-image load-control-plane-image build-proxy-worker-image load-proxy-worker-image build-web-ui-image build-images load-images test-proxy-worker build-proxy-worker proxy-worker-local-smoke test-go-proxy-worker build-go-proxy-worker build-go-proxy-worker-image go-proxy-worker-local-smoke test-web-ui web-ui-dev install-spire install-vault install-airlock deploy-demo install-baseline demo-smoke local-control-plane-smoke spiffe-policy-smoke vault-jwt-setup k8s-egress-smoke injected-sidecar-smoke existing-envoy-smoke single-local-smoke security-smoke fail-closed-smoke fail-closed-k8s-smoke tls-termination-smoke envoy-sds-tls-smoke envoy-connect-sds-smoke github-connect-sds-smoke compose-git-demo compose-git-envoy-demo compose-git-no-control-plane-demo compose-git-clean compose-proxy-observability-up compose-proxy-observability-logs compose-proxy-observability-down compose-proxy-observability-clean opencode-headless-up opencode-headless-attach opencode-headless-logs opencode-headless-down opencode-headless-clean codex-app-server-up codex-app-server-connect codex-app-server-logs codex-app-server-down codex-app-server-clean test-e2e demo test
+.PHONY: kind-up kind-down build-control-plane-image load-control-plane-image build-proxy-worker-image load-proxy-worker-image build-airlock-artifact-image push-airlock-artifact-image build-web-ui-image build-images load-images test-proxy-worker build-proxy-worker proxy-worker-local-smoke test-go-proxy-worker build-go-proxy-worker build-go-proxy-worker-image go-proxy-worker-local-smoke test-web-ui web-ui-dev install-spire install-vault install-airlock deploy-demo install-baseline demo-smoke local-control-plane-smoke spiffe-policy-smoke vault-jwt-setup k8s-egress-smoke injected-sidecar-smoke existing-envoy-smoke single-local-smoke security-smoke fail-closed-smoke fail-closed-k8s-smoke tls-termination-smoke envoy-sds-tls-smoke envoy-connect-sds-smoke github-connect-sds-smoke test-e2e demo build-go test-go test-race lint check test
 
 kind-up:
 	kind create cluster --name $(KIND_CLUSTER) --config $(KIND_CONFIG)
@@ -26,6 +30,12 @@ load-control-plane-image:
 
 build-proxy-worker-image:
 	docker build -f proxy-worker/Dockerfile -t $(PROXY_WORKER_IMAGE) .
+
+build-airlock-artifact-image:
+	docker buildx build --load -f $(AIRLOCK_ARTIFACT_DOCKERFILE) -t $(AIRLOCK_ARTIFACT_IMAGE) .
+
+push-airlock-artifact-image:
+	docker buildx build --platform $(AIRLOCK_IMAGE_PLATFORMS) -f $(AIRLOCK_ARTIFACT_DOCKERFILE) -t $(AIRLOCK_ARTIFACT_REMOTE_IMAGE) --push .
 
 build-web-ui-image:
 	docker build -f web-ui/Dockerfile -t $(WEB_UI_IMAGE) web-ui
@@ -150,67 +160,24 @@ envoy-connect-sds-smoke:
 github-connect-sds-smoke:
 	./$(SMOKE_SCRIPTS_DIR)/github-connect-sds-smoke.sh
 
-compose-git-demo:
-	docker compose -f examples/compose/git/compose.yaml up --build --abort-on-container-exit --exit-code-from git-app
-
-compose-git-envoy-demo:
-	docker compose -f examples/compose/git/compose.envoy.yaml up --build --abort-on-container-exit --exit-code-from git-app
-
-compose-git-no-control-plane-demo:
-	docker compose -f examples/compose/git/compose.no-control-plane.yaml up --build --abort-on-container-exit --exit-code-from git-app
-
-compose-git-clean:
-	docker compose -f examples/compose/git/compose.yaml down -v
-	docker compose -f examples/compose/git/compose.envoy.yaml down -v
-	docker compose -f examples/compose/git/compose.no-control-plane.yaml down -v
-
-compose-proxy-observability-up:
-	docker compose -f examples/compose/proxy-observability/compose.yaml up -d --build
-
-compose-proxy-observability-logs:
-	docker compose -f examples/compose/proxy-observability/compose.yaml logs -f proxy-worker control-plane web-ui client
-
-compose-proxy-observability-down:
-	docker compose -f examples/compose/proxy-observability/compose.yaml down
-
-compose-proxy-observability-clean:
-	docker compose -f examples/compose/proxy-observability/compose.yaml down -v
-
-opencode-headless-up:
-	docker compose -f examples/compose/opencode-headless/compose.yaml up -d
-
-opencode-headless-attach:
-	opencode attach http://localhost:$${OPENCODE_PORT:-4096} --dir /workspace --username $${OPENCODE_SERVER_USERNAME:-opencode} --password $${OPENCODE_SERVER_PASSWORD:-opencode-local}
-
-opencode-headless-logs:
-	docker compose -f examples/compose/opencode-headless/compose.yaml logs -f opencode-server
-
-opencode-headless-down:
-	docker compose -f examples/compose/opencode-headless/compose.yaml down
-
-opencode-headless-clean:
-	docker compose -f examples/compose/opencode-headless/compose.yaml down -v
-
-codex-app-server-up:
-	docker compose -f examples/compose/codex-app-server/compose.yaml up -d --build
-
-codex-app-server-connect:
-	CODEX_REMOTE_AUTH_TOKEN=$$(cat examples/compose/codex-app-server/secrets/ws-token) codex --remote ws://127.0.0.1:$${CODEX_APP_SERVER_PORT:-4100} --remote-auth-token-env CODEX_REMOTE_AUTH_TOKEN
-
-codex-app-server-logs:
-	docker compose -f examples/compose/codex-app-server/compose.yaml logs -f codex-app-server
-
-codex-app-server-down:
-	docker compose -f examples/compose/codex-app-server/compose.yaml down
-
-codex-app-server-clean:
-	docker compose -f examples/compose/codex-app-server/compose.yaml down -v
-
 test-e2e: demo-smoke vault-jwt-setup k8s-egress-smoke injected-sidecar-smoke existing-envoy-smoke security-smoke
 
 demo: kind-up
 	$(MAKE) install-baseline
 	$(MAKE) test-e2e
 
-test:
+build-go:
+	go build $(GO_TEST_PACKAGES)
+
+test-go:
 	go test $(GO_TEST_PACKAGES)
+
+test-race:
+	go test -race $(GO_TEST_PACKAGES)
+
+lint:
+	golangci-lint run
+
+check: build-go test-race lint
+
+test: test-go

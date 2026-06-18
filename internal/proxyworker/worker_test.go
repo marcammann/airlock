@@ -1,4 +1,4 @@
-package proxyworker
+package proxyworker_test
 
 import (
 	"bufio"
@@ -11,11 +11,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/marcammann/airlock/internal/netutil"
 )
 
 const testWorkloadIdentity = "spiffe://airlock.local/ns/demo/sa/code-agent/component/airlock-proxy-worker"
@@ -106,12 +106,56 @@ func TestDeniedRequestFailsClosedBeforeConnectingUpstream(t *testing.T) {
 	}
 }
 
+func TestPolicyReloadDeniesPreviouslyAllowedDestination(t *testing.T) {
+	upstreamAddr, _ := startUpstream(t)
+	proxy := NewProxyServer(testPolicy("127.0.0.1", uint16(upstreamAddr.Port)), staticSecretProvider{value: "test-token"}, NewMemoryEventLog())
+	proxyAddr := startProxy(t, proxy)
+	request := fmt.Sprintf(
+		"GET http://127.0.0.1:%d/v1/models HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nConnection: close\r\n\r\n",
+		upstreamAddr.Port,
+		upstreamAddr.Port,
+	)
+
+	response := sendProxyRequest(t, proxyAddr, request)
+	if !strings.HasPrefix(response, "HTTP/1.1 200 OK") {
+		t.Fatalf("response = %q, want 200 before reload", response)
+	}
+
+	proxy.UpdatePolicy(testPolicy("other.test", 80))
+	response = sendProxyRequest(t, proxyAddr, request)
+	if !strings.HasPrefix(response, "HTTP/1.1 403 Forbidden") {
+		t.Fatalf("response = %q, want 403 after reload", response)
+	}
+}
+
+func TestPolicyReloadAllowsPreviouslyDeniedDestination(t *testing.T) {
+	upstreamAddr, _ := startUpstream(t)
+	proxy := NewProxyServer(testPolicy("other.test", 80), staticSecretProvider{value: "test-token"}, NewMemoryEventLog())
+	proxyAddr := startProxy(t, proxy)
+	request := fmt.Sprintf(
+		"GET http://127.0.0.1:%d/v1/models HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nConnection: close\r\n\r\n",
+		upstreamAddr.Port,
+		upstreamAddr.Port,
+	)
+
+	response := sendProxyRequest(t, proxyAddr, request)
+	if !strings.HasPrefix(response, "HTTP/1.1 403 Forbidden") {
+		t.Fatalf("response = %q, want 403 before reload", response)
+	}
+
+	proxy.UpdatePolicy(testPolicy("127.0.0.1", uint16(upstreamAddr.Port)))
+	response = sendProxyRequest(t, proxyAddr, request)
+	if !strings.HasPrefix(response, "HTTP/1.1 200 OK") {
+		t.Fatalf("response = %q, want 200 after reload", response)
+	}
+}
+
 func TestEventLogSnapshotCountsDecisions(t *testing.T) {
 	log := NewMemoryEventLog()
 
-	log.Record("allowed request method=GET upstream=https://allowed.test path=/v1")
-	log.Record("denied request method=GET upstream=https://denied.test reason=no_matching_egress")
-	log.Record("denied request method=GET upstream=https://secret.test dependency=secret reason=missing")
+	log.Record(DecisionAllow, "allowed request method=GET upstream=https://allowed.test path=/v1", map[string]string{"method": "GET", "destination": "allowed.test:443"})
+	log.Record(DecisionDeny, "denied request method=GET upstream=https://denied.test reason=no_matching_egress", map[string]string{"method": "GET", "destination": "denied.test:443", "reason": "no_matching_egress"})
+	log.Record(DecisionSecretError, "denied request method=GET upstream=https://secret.test dependency=secret reason=missing", map[string]string{"method": "GET", "destination": "secret.test:443", "dependency": "secret", "reason": "missing"})
 
 	snapshot := log.Snapshot()
 	if snapshot.Allowed != 1 || snapshot.Denied != 1 || snapshot.ProxyError != 1 {
@@ -125,8 +169,8 @@ func TestEventLogSnapshotCountsDecisions(t *testing.T) {
 	}
 	if snapshot.DecisionEvents[0].Decision != "allowed" ||
 		snapshot.DecisionEvents[1].Decision != "denied" ||
-		snapshot.DecisionEvents[2].Decision != "proxy_error" {
-		t.Fatalf("DecisionEvents = %+v, want allowed/denied/proxy_error", snapshot.DecisionEvents)
+		snapshot.DecisionEvents[2].Decision != DecisionSecretError {
+		t.Fatalf("DecisionEvents = %+v, want allowed/denied/secret_error", snapshot.DecisionEvents)
 	}
 }
 
@@ -134,7 +178,7 @@ func TestHeartbeatReporterPostsProxyStatus(t *testing.T) {
 	t.Setenv("POD_NAMESPACE", "demo")
 	t.Setenv("POD_NAME", "code-agent-123")
 	log := NewMemoryEventLog()
-	log.Record("allowed request method=GET upstream=https://github.com path=/owner/repo.git")
+	log.Record(DecisionAllow, "allowed request method=GET upstream=https://github.com path=/owner/repo.git", map[string]string{"method": "GET", "destination": "github.com:443"})
 	policyFetchedAt := time.Now().UTC()
 	processStartedAt := policyFetchedAt.Add(-time.Minute)
 	received := make(chan proxyHeartbeatPayload, 1)
@@ -145,8 +189,8 @@ func TestHeartbeatReporterPostsProxyStatus(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer dev-token" {
-			t.Errorf("Authorization = %q, want bearer dev-token", got)
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("Authorization = %q, want no bearer token", got)
 		}
 		var payload proxyHeartbeatPayload
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -161,7 +205,6 @@ func TestHeartbeatReporterPostsProxyStatus(t *testing.T) {
 
 	reporter, err := NewHeartbeatReporter(HeartbeatReporterOptions{
 		BaseURL:           server.URL,
-		DevToken:          "dev-token",
 		ProxyID:           "proxy-1",
 		ProxyType:         "http:builtin",
 		WorkloadIdentity:  testWorkloadIdentity,
@@ -240,6 +283,48 @@ func TestHeartbeatReporterRunsOnInterval(t *testing.T) {
 	}
 }
 
+func TestHeartbeatReporterUpdatesPolicyMetadata(t *testing.T) {
+	received := make(chan proxyHeartbeatPayload, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload proxyHeartbeatPayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode heartbeat: %v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		received <- payload
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	reporter, err := NewHeartbeatReporter(HeartbeatReporterOptions{
+		BaseURL:           server.URL,
+		ProxyID:           "proxy-1",
+		ProxyType:         "http:builtin",
+		WorkloadIdentity:  testWorkloadIdentity,
+		WorkloadName:      "old-policy",
+		EffectiveVersion:  "old-version",
+		HeartbeatInterval: 10 * time.Second,
+		Log:               NewMemoryEventLog(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetchedAt := time.Now().UTC()
+	updated := testPolicy("api.example.test", 80)
+	updated.PolicyName = "new-policy"
+	updated.Version = "airlock.dev/v1alpha1"
+	reporter.UpdatePolicy(updated, fetchedAt)
+
+	if err := reporter.Report(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	payload := recvHeartbeat(t, received)
+	if payload.WorkloadName != "new-policy" || payload.EffectiveVersion != "airlock.dev/v1alpha1" || payload.LastPolicyFetchAt == nil {
+		t.Fatalf("payload = %+v, want updated policy metadata", payload)
+	}
+}
+
 func TestEventReporterPostsAggregatedDeniedEvent(t *testing.T) {
 	received := make(chan eventReportPayload, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -248,8 +333,8 @@ func TestEventReporterPostsAggregatedDeniedEvent(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer dev-token" {
-			t.Errorf("Authorization = %q, want bearer dev-token", got)
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("Authorization = %q, want no bearer token", got)
 		}
 		var payload eventReportPayload
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -264,7 +349,6 @@ func TestEventReporterPostsAggregatedDeniedEvent(t *testing.T) {
 
 	reporter, err := NewEventReporter(EventReporterOptions{
 		Endpoint:          server.URL + "/v1/events",
-		DevToken:          "dev-token",
 		ProxyID:           "10.42.0.17",
 		ProxyType:         "http:builtin",
 		WorkloadIdentity:  testWorkloadIdentity,
@@ -283,8 +367,13 @@ func TestEventReporterPostsAggregatedDeniedEvent(t *testing.T) {
 	event := DecisionEvent{
 		ID:       7,
 		At:       time.Now().UTC(),
-		Decision: "denied",
+		Decision: DecisionDeny,
 		Message:  "denied request policy=test-policy policy_version=airlock.dev/v1alpha1 rule=example method=GET destination=example.com:80",
+		Fields: map[string]string{
+			"method":      "GET",
+			"rule":        "example",
+			"destination": "example.com:80",
+		},
 	}
 	reporter.RecordDecision(event)
 	event.ID = 8
@@ -311,6 +400,61 @@ func TestEventReporterPostsAggregatedDeniedEvent(t *testing.T) {
 	}
 }
 
+func TestEventReporterUpdatesPolicyMetadata(t *testing.T) {
+	received := make(chan eventReportPayload, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload eventReportPayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode event payload: %v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		received <- payload
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	reporter, err := NewEventReporter(EventReporterOptions{
+		Endpoint:         server.URL + "/v1/events",
+		ProxyID:          "10.42.0.17",
+		ProxyType:        "http:builtin",
+		WorkloadIdentity: testWorkloadIdentity,
+		WorkloadName:     "old-policy",
+		EffectiveVersion: "old-version",
+		RatePerSecond:    10,
+		Burst:            10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := testPolicy("api.example.test", 80)
+	updated.PolicyName = "new-policy"
+	updated.Egress[0].SourcePolicy = &PolicyRef{Name: "new-source-policy", Namespace: "airlock-system"}
+	reporter.UpdatePolicy(updated)
+	reporter.RecordDecision(DecisionEvent{
+		ID:       1,
+		At:       time.Now().UTC(),
+		Decision: DecisionDeny,
+		Message:  "denied request policy=new-policy policy_version=airlock.dev/v1alpha1 rule=local-upstream method=GET destination=api.example.test:80",
+		Fields: map[string]string{
+			"method":      "GET",
+			"rule":        "local-upstream",
+			"destination": "api.example.test:80",
+		},
+	})
+	if err := reporter.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	payload := recvEventReport(t, received)
+	if len(payload.Events) != 1 {
+		t.Fatalf("events = %+v, want one event", payload.Events)
+	}
+	got := payload.Events[0]
+	if got.WorkloadName != "new-policy" || got.SourcePolicyName != "new-source-policy" {
+		t.Fatalf("event = %+v, want updated workload and source policy", got)
+	}
+}
+
 func TestEventReporterIgnoresAllowedEvents(t *testing.T) {
 	reporter, err := NewEventReporter(EventReporterOptions{
 		Endpoint:         "http://127.0.0.1:1/v1/events",
@@ -323,8 +467,12 @@ func TestEventReporterIgnoresAllowedEvents(t *testing.T) {
 	reporter.RecordDecision(DecisionEvent{
 		ID:       1,
 		At:       time.Now().UTC(),
-		Decision: "allowed",
+		Decision: DecisionAllow,
 		Message:  "allowed request method=GET destination=example.com:80",
+		Fields: map[string]string{
+			"method":      "GET",
+			"destination": "example.com:80",
+		},
 	})
 	if err := reporter.Flush(context.Background()); err != nil {
 		t.Fatalf("Flush() error = %v, want nil without outbound request", err)
@@ -365,7 +513,7 @@ func TestHTTPSConnectIsInterceptedRewrittenAndRedacted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, port, err := splitHostPort(upstreamURL.Host, 443)
+	host, port, err := netutil.SplitHostPort(upstreamURL.Host, 443)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -401,7 +549,7 @@ func TestHTTPSConnectIsInterceptedRewrittenAndRedacted(t *testing.T) {
 	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", upstreamURL.Host, upstreamURL.Host); err != nil {
 		t.Fatal(err)
 	}
-	if status := readResponseStatus(t, conn); !strings.Contains(status, "200 Connection Established") {
+	if status := readResponseStatus(t, conn); !strings.Contains(status, " 200 ") {
 		t.Fatalf("CONNECT response = %q, want 200", status)
 	}
 
@@ -420,12 +568,13 @@ func TestHTTPSConnectIsInterceptedRewrittenAndRedacted(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	response, err := io.ReadAll(tlsConn)
+	response, err := http.ReadResponse(bufio.NewReader(tlsConn), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(response), "HTTP/1.1 200 OK") {
-		t.Fatalf("response = %q, want 200", string(response))
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("response status = %s, want 200", response.Status)
 	}
 
 	headers := recvHeaders(t, seenHeaders)
@@ -444,6 +593,93 @@ func TestHTTPSConnectIsInterceptedRewrittenAndRedacted(t *testing.T) {
 	}
 }
 
+func TestHTTPSConnectHandlesMultipleRequestsPerTunnel(t *testing.T) {
+	seenRequests := make(chan string, 2)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenRequests <- r.URL.Path + "|" + r.Header.Get("Authorization")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(upstream.Close)
+
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, port, err := netutil.SplitHostPort(upstreamURL.Host, 443)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	certPEM, keyPEM, err := GenerateCertificateAuthority("airlock test mitm ca")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca, err := ParseCertificateAuthority(certPEM, keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	proxy := NewProxyServerWithOptions(
+		testPolicyWithScheme("https", host, port),
+		staticSecretProvider{value: "test-token"},
+		NewMemoryEventLog(),
+		ProxyServerOptions{
+			MITMCA: ca,
+			UpstreamTLSConfig: &tls.Config{
+				InsecureSkipVerify: true,
+			},
+		},
+	)
+	proxyAddr := startProxy(t, proxy)
+
+	conn, err := net.Dial("tcp", proxyAddr.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", upstreamURL.Host, upstreamURL.Host); err != nil {
+		t.Fatal(err)
+	}
+	if status := readResponseStatus(t, conn); !strings.Contains(status, " 200 ") {
+		t.Fatalf("CONNECT response = %q, want 200", status)
+	}
+
+	tlsConn := tls.Client(conn, &tls.Config{
+		RootCAs:    ca.CertPool(),
+		ServerName: host,
+		MinVersion: tls.VersionTLS12,
+	})
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(tlsConn)
+
+	for _, path := range []string{"/first", "/second"} {
+		if _, err := fmt.Fprintf(tlsConn, "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n", path, upstreamURL.Host); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+		response, err := http.ReadResponse(reader, nil)
+		if err != nil {
+			t.Fatalf("read %s response: %v", path, err)
+		}
+		body, err := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		if err != nil {
+			t.Fatalf("read %s body: %v", path, err)
+		}
+		if response.StatusCode != http.StatusOK || string(body) != "ok" {
+			t.Fatalf("%s response status=%s body=%q, want 200 ok", path, response.Status, body)
+		}
+	}
+
+	if got := recvString(t, seenRequests); got != "/first|Bearer test-token" {
+		t.Fatalf("first upstream request = %q, want rewritten first request", got)
+	}
+	if got := recvString(t, seenRequests); got != "/second|Bearer test-token" {
+		t.Fatalf("second upstream request = %q, want rewritten second request", got)
+	}
+}
+
 func TestHTTPSConnectWithoutMITMTunnelsAllowedDestinationWithNoRewrites(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("ok"))
@@ -454,7 +690,7 @@ func TestHTTPSConnectWithoutMITMTunnelsAllowedDestinationWithNoRewrites(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	host, port, err := splitHostPort(upstreamURL.Host, 443)
+	host, port, err := netutil.SplitHostPort(upstreamURL.Host, 443)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,7 +719,7 @@ func TestHTTPSConnectWithoutMITMTunnelsAllowedDestinationWithNoRewrites(t *testi
 	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", upstreamURL.Host, upstreamURL.Host); err != nil {
 		t.Fatal(err)
 	}
-	if status := readResponseStatus(t, conn); !strings.Contains(status, "200 Connection Established") {
+	if status := readResponseStatus(t, conn); !strings.Contains(status, " 200 ") {
 		t.Fatalf("CONNECT response = %q, want 200", status)
 	}
 
@@ -498,15 +734,41 @@ func TestHTTPSConnectWithoutMITMTunnelsAllowedDestinationWithNoRewrites(t *testi
 	if _, err := fmt.Fprintf(tlsConn, "GET / HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", upstreamURL.Host); err != nil {
 		t.Fatal(err)
 	}
-	response, err := io.ReadAll(tlsConn)
+	response, err := http.ReadResponse(bufio.NewReader(tlsConn), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(response), "HTTP/1.1 200 OK") {
-		t.Fatalf("response = %q, want 200", string(response))
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("response status = %s, want 200", response.Status)
 	}
 	if !strings.Contains(strings.Join(log.Entries(), "\n"), "allowed CONNECT tunnel") {
 		t.Fatalf("logs = %q, want allowed CONNECT tunnel", log.Entries())
+	}
+}
+
+func TestWorkerGracefulShutdown(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := NewMemoryEventLog()
+	proxy := NewProxyServer(testPolicy("example.com", 80), staticSecretProvider{value: "unused"}, log)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- proxy.Serve(ctx, listener)
+	}()
+
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve() error = %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxy did not stop after context cancellation")
 	}
 }
 
@@ -631,31 +893,6 @@ func TestExtProcDeniedConnectReturnsImmediateDeny(t *testing.T) {
 	}
 }
 
-func TestEnvFileSecretProviderReadsEnvAndFileValues(t *testing.T) {
-	t.Setenv("AIRLOCK_ENV_FILE_TEST_TOKEN", "env-token")
-	provider := EnvFileSecretProvider{}
-
-	envValue, err := provider.Resolve(SecretRef{Provider: "env", Env: "AIRLOCK_ENV_FILE_TEST_TOKEN"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if envValue != "env-token" {
-		t.Fatalf("env value = %q, want env-token", envValue)
-	}
-
-	path := filepath.Join(t.TempDir(), "secret.txt")
-	if err := os.WriteFile(path, []byte("file-token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	fileValue, err := provider.Resolve(SecretRef{Provider: "file", File: path})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fileValue != "file-token" {
-		t.Fatalf("file value = %q, want file-token", fileValue)
-	}
-}
-
 func TestLocalPolicyProviderLoadsSharedLocalHTTPFixture(t *testing.T) {
 	policy, err := NewLocalPolicyProvider("../../fixtures/compiled/local-http.yaml").Load()
 	if err != nil {
@@ -681,7 +918,7 @@ func TestControlPlanePolicyProviderFetchesCompiledPolicy(t *testing.T) {
 	}
 	baseURL, requests := startControlPlane(t, body, 200)
 
-	got, err := NewControlPlanePolicyProvider(baseURL, policy.Workload.SPIFFEID, "dev-token").Load()
+	got, err := NewControlPlanePolicyProvider(baseURL, policy.Workload.SPIFFEID).Load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -696,20 +933,96 @@ func TestControlPlanePolicyProviderFetchesCompiledPolicy(t *testing.T) {
 	if !strings.Contains(request, "GET /v1/policies/spiffe%3A%2F%2Fairlock.local%2Fns%2Fdemo%2Fsa%2Fcode-agent%2Fcomponent%2Fairlock-proxy-worker HTTP/1.1") {
 		t.Fatalf("request = %q, want encoded workload path", request)
 	}
-	if !strings.Contains(request, "Authorization: Bearer dev-token") {
-		t.Fatalf("request = %q, want dev token auth", request)
+	if strings.Contains(request, "Authorization:") {
+		t.Fatalf("request = %q, want unauthenticated policy request", request)
+	}
+}
+
+func TestControlPlanePolicyProviderPollHandlesNotModified(t *testing.T) {
+	policy := testPolicy("api.example.test", 80)
+	policyBody, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawIfNoneMatch bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") == `"v1"` {
+			sawIfNoneMatch = true
+			w.Header().Set("ETag", `"v1"`)
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", `"v1"`)
+		_, _ = w.Write(policyBody)
+	}))
+	t.Cleanup(server.Close)
+
+	provider := NewControlPlanePolicyProvider(server.URL, testWorkloadIdentity)
+	first, err := provider.Poll(context.Background(), server.Client(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.NotModified || first.ETag != `"v1"` {
+		t.Fatalf("first poll = %+v, want policy with ETag v1", first)
+	}
+
+	second, err := provider.Poll(context.Background(), server.Client(), first.ETag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.NotModified || second.ETag != `"v1"` || !sawIfNoneMatch {
+		t.Fatalf("second poll = %+v sawIfNoneMatch=%t, want 304 with If-None-Match", second, sawIfNoneMatch)
+	}
+}
+
+func TestEnrollmentPolicyProviderRedeemsCompiledPolicy(t *testing.T) {
+	policy := testPolicy("api.example.test", 80)
+	received := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/enrollments/redeem" {
+			t.Errorf("request = %s %s, want POST /v1/enrollments/redeem", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer al_enroll_test" {
+			t.Errorf("Authorization = %q, want enrollment bearer", got)
+		}
+		received <- struct{}{}
+		writeJSON(t, w, map[string]any{"policy": policy})
+	}))
+	t.Cleanup(server.Close)
+
+	got, err := NewEnrollmentPolicyProvider(server.URL, "al_enroll_test").Load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PolicyName != policy.PolicyName || got.Workload.SPIFFEID != policy.Workload.SPIFFEID {
+		t.Fatalf("policy = %+v, want redeemed policy", got)
+	}
+	select {
+	case <-received:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for redeem request")
 	}
 }
 
 func TestControlPlanePolicyProviderErrorsOnNon200(t *testing.T) {
 	baseURL, _ := startControlPlane(t, []byte(`{"error":"policy not found"}`), 404)
 
-	_, err := NewControlPlanePolicyProvider(baseURL, "spiffe://airlock.local/ns/demo/sa/missing", "").Load()
+	_, err := NewControlPlanePolicyProvider(baseURL, "spiffe://airlock.local/ns/demo/sa/missing").Load()
 	if err == nil {
 		t.Fatal("Load() error = nil, want non-200 error")
 	}
 	if !strings.Contains(err.Error(), "HTTP 404") {
 		t.Fatalf("error = %q, want HTTP 404", err)
+	}
+}
+
+func writeJSON(t *testing.T, w http.ResponseWriter, value any) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -721,7 +1034,7 @@ func startProxy(t *testing.T, proxy *ProxyServer) net.Addr {
 	}
 	t.Cleanup(func() { _ = listener.Close() })
 	go func() {
-		_ = proxy.ServeLimit(listener, 1)
+		_ = proxy.Serve(context.Background(), listener)
 	}()
 	return listener.Addr()
 }
@@ -816,6 +1129,28 @@ func recvHeaders(t *testing.T, ch <-chan http.Header) http.Header {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for request")
 		return nil
+	}
+}
+
+func recvHeartbeat(t *testing.T, ch <-chan proxyHeartbeatPayload) proxyHeartbeatPayload {
+	t.Helper()
+	select {
+	case value := <-ch:
+		return value
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for heartbeat")
+		return proxyHeartbeatPayload{}
+	}
+}
+
+func recvEventReport(t *testing.T, ch <-chan eventReportPayload) eventReportPayload {
+	t.Helper()
+	select {
+	case value := <-ch:
+		return value
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for event report")
+		return eventReportPayload{}
 	}
 }
 

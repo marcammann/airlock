@@ -35,7 +35,11 @@ umask 077
   -keyout "$tmpdir/ca.key" \
   -out "$tmpdir/ca.crt" \
   -days 1 \
-  -subj "/CN=airlock github connect smoke ca" >/dev/null 2>&1
+  -sha256 \
+  -subj "/CN=airlock github connect smoke ca" \
+  -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign" \
+  -addext "subjectKeyIdentifier=hash" >/dev/null 2>&1
 
 printf "%s:%s" "$GITHUB_BASIC_USER" "$GITHUB_PAT" | base64 | tr -d '\n' >"$tmpdir/github-basic-auth"
 

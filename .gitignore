@@ -7,3 +7,6 @@ desktop.ini
 .cache/
 dist/
 .env
+.venv/
+__pycache__/
+*.pyc

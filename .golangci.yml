@@ -1,0 +1,40 @@
+version: "2"
+run:
+  tests: true
+linters:
+  enable:
+    - revive
+  settings:
+    revive:
+      rules:
+        - name: error-strings
+        - name: exported
+        - name: package-comments
+        - name: context-as-argument
+        - name: context-keys-type
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - staticcheck
+        text: "QF1008:"
+      - linters:
+          - revive
+        text: "stutters; consider calling this"
+    paths:
+      - third_party$
+      - web-ui/node_modules
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - web-ui/node_modules

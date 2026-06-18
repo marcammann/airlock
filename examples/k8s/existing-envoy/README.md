@@ -10,6 +10,6 @@ Apply it after the Airlock baseline demo is installed:
 kubectl apply -k examples/k8s/existing-envoy
 ```
 
-The Makefile target `existing-envoy-smoke` applies this manifest during its
-smoke test.
-
+For a scripted smoke, run `scripts/smoke/k8s-egress-smoke.sh` with the
+`SMOKE_NAME`, `WORKLOAD_DEPLOYMENT`, `WORKLOAD_LABEL`, `WORKLOAD_MANIFEST`, and
+`ALLOW_SOURCE_ENVOY=true` environment variables set for this manifest.

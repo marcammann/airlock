@@ -22,7 +22,8 @@ the Go control plane plus the Go proxy worker.
   deployments such as Istio-style sidecars.
 - Next.js WebUI with read-only workload inventory, workload detail pages, and a
   proxy status surface ready for heartbeat data.
-- Docker Compose demos for Git, OpenCode, and Codex app-server workflows.
+- Docker Compose demos for standalone, enrollment, and SPIFFE/Envoy workflows.
+- Daytona soft-sandbox image example for no-control-plane local policy mode.
 
 ## Repository Layout
 
@@ -30,6 +31,7 @@ the Go control plane plus the Go proxy worker.
 api/              shared Go API and wire contract types
 cmd/              Go binaries
 internal/         Go control plane, policy, and proxy worker internals
+build/            shared build and packaging assets
 control-plane/    control-plane image build assets
 proxy-worker/     proxy-worker image build assets
 web-ui/           Next.js and Tailwind admin console
@@ -67,6 +69,12 @@ Build container images:
 ```sh
 make build-images
 make build-web-ui-image
+```
+
+Build the scratch artifact image containing all Airlock Go binaries:
+
+```sh
+make build-airlock-artifact-image
 ```
 
 ## Local Proxy Worker
@@ -198,64 +206,65 @@ make envoy-connect-sds-smoke
 
 ## Docker Compose Demos
 
-### Git Checkout
+### Standalone
 
-The Git demo runs the control plane in one container and an app plus Airlock
-proxy worker in another. The app runs as an unprivileged user and does not have
-direct access to GitHub credentials; the proxy injects HTTPS Basic auth.
-
-```sh
-export GITHUB_PAT=github_pat_or_classic_pat_with_repo_access
-make compose-git-demo
-```
-
-Variants:
+The standalone demo runs no control plane. One builtin proxy loads a local
+compiled policy, and profiles choose either OpenCode or Codex.
 
 ```sh
-make compose-git-envoy-demo
-make compose-git-no-control-plane-demo
+docker compose -f examples/compose/standalone/compose.yaml --profile opencode up -d --build
+docker compose -f examples/compose/standalone/compose.yaml --profile codex up -d --build
 ```
 
-See [`examples/compose/git`](examples/compose/git).
+See [`examples/compose/standalone`](examples/compose/standalone).
 
-### Proxy Observability
+### Control Plane Enrollment
 
-The proxy observability demo keeps the control plane, proxy worker, Web UI, and
-curl client in separate containers. Use it when you want to watch heartbeats and
-allow/deny counters without a one-shot app container exiting.
+The enrollment demo runs a control plane, creates a one-time enrollment token
+with an API-key dispatcher, starts a builtin HTTP proxy, and runs one allowed
+curl plus one denied curl. The allowed request proves a file secret was injected
+in transit by the proxy.
 
 ```sh
-make compose-proxy-observability-up
+docker compose -f examples/compose/control-plane-enrollment/compose.yaml up --build --abort-on-container-exit --exit-code-from curl-workload
 ```
 
-Then open `http://127.0.0.1:13000/proxies` and run curl requests from the
-client container.
+See [`examples/compose/control-plane-enrollment`](examples/compose/control-plane-enrollment).
 
-See [`examples/compose/proxy-observability`](examples/compose/proxy-observability).
+### SPIFFE And Envoy
 
-### OpenCode
-
-The OpenCode example runs a headless OpenCode server in Docker and routes
-proxy-aware HTTP(S) egress through Airlock.
+The SPIFFE/Envoy demo runs SPIRE, authenticates the proxy-worker to the control
+plane with SPIFFE mTLS, and routes curl through Envoy ext_proc. It also runs one
+allowed request with a proxy-injected file secret and one denied request.
 
 ```sh
-make opencode-headless-up
-make opencode-headless-attach
+docker compose -f examples/compose/spiffe-envoy/compose.yaml up --build --abort-on-container-exit --exit-code-from curl-workload
 ```
 
-See [`examples/compose/opencode-headless`](examples/compose/opencode-headless).
+See [`examples/compose/spiffe-envoy`](examples/compose/spiffe-envoy).
 
-### Codex App Server
+## Daytona Sandbox
 
-The Codex app-server example runs `codex app-server` in Docker and connects
-from the local Codex CLI.
+The Daytona soft-sandbox example builds a single custom sandbox image with the
+proxy worker embedded. It starts Airlock in a Daytona session as the `airlock`
+Unix user, keeps agent processes as `daytona`, loads a local policy, and reads
+API credentials from an Airlock-only file.
 
 ```sh
-make codex-app-server-up
-make codex-app-server-connect
+docker buildx build --load -f build/package/Dockerfile.artifacts -t ghcr.io/marcammann/airlock:dev .
+docker buildx build --load \
+  --build-arg AIRLOCK_ARTIFACT_IMAGE=ghcr.io/marcammann/airlock:dev \
+  -f examples/daytona/soft-sandbox/Dockerfile \
+  -t airlock-daytona-soft-sandbox:dev \
+  examples/daytona/soft-sandbox
+uv sync --project examples/daytona/soft-sandbox
+examples/daytona/soft-sandbox/local-smoke.sh
+DAYTONA_API_KEY=... uv run --project examples/daytona/soft-sandbox python examples/daytona/soft-sandbox/sandbox.py snapshot create
+DAYTONA_API_KEY=... OPENAI_API_KEY=sk-... uv run --project examples/daytona/soft-sandbox python examples/daytona/soft-sandbox/sandbox.py snapshot run
+OPENAI_API_KEY=sk-... examples/daytona/soft-sandbox/local-smoke.sh
 ```
 
-See [`examples/compose/codex-app-server`](examples/compose/codex-app-server).
+See [`examples/daytona/soft-sandbox`](examples/daytona/soft-sandbox).
 
 ## WebUI
 

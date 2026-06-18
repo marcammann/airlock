@@ -1,0 +1,154 @@
+volumes:
+  spire-server-data:
+  spire-bootstrap:
+
+services:
+  spire-server:
+    build:
+      context: ../../..
+      dockerfile: examples/compose/spiffe-envoy/Dockerfile.spire
+    command:
+      - spire-server
+      - run
+      - -config
+      - /run/spire/config/server.conf
+    volumes:
+      - ./spire/server.conf:/run/spire/config/server.conf:ro
+      - spire-server-data:/run/spire/server
+    healthcheck:
+      test: ["CMD", "spire-server", "healthcheck", "-socketPath", "/run/spire/server/private/api.sock"]
+      interval: 2s
+      timeout: 1s
+      retries: 60
+
+  spire-bootstrap:
+    build:
+      context: ../../..
+      dockerfile: examples/compose/spiffe-envoy/Dockerfile.spire
+    depends_on:
+      spire-server:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+    command:
+      - -ec
+      - |
+        socket=/run/spire/server/private/api.sock
+        token_file=/run/spire/bootstrap/join-token
+        control_token="$$(spire-server token generate -socketPath "$$socket" -ttl 3600 | sed -n 's/^Token: //p')"
+        proxy_token="$$(spire-server token generate -socketPath "$$socket" -ttl 3600 | sed -n 's/^Token: //p')"
+        test -n "$$control_token"
+        test -n "$$proxy_token"
+        printf '%s' "$$control_token" > /run/spire/bootstrap/control-plane-token
+        printf '%s' "$$proxy_token" > /run/spire/bootstrap/proxy-worker-token
+        spire-server entry create -socketPath "$$socket" -parentID "spiffe://airlock.local/spire/agent/join_token/$$control_token" -spiffeID spiffe://airlock.local/compose/spiffe-envoy/control-plane -selector unix:uid:1001 || true
+        spire-server entry create -socketPath "$$socket" -parentID "spiffe://airlock.local/spire/agent/join_token/$$proxy_token" -spiffeID spiffe://airlock.local/compose/spiffe-envoy/proxy-worker -selector unix:uid:1002 || true
+        tail -f /dev/null
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /run/spire/bootstrap/control-plane-token && test -s /run/spire/bootstrap/proxy-worker-token"]
+      interval: 2s
+      timeout: 1s
+      retries: 30
+    volumes:
+      - spire-server-data:/run/spire/server
+      - spire-bootstrap:/run/spire/bootstrap
+
+  control-plane:
+    build:
+      context: ../../..
+      dockerfile: examples/compose/spiffe-envoy/Dockerfile.airlock-spire
+    depends_on:
+      spire-bootstrap:
+        condition: service_healthy
+    command:
+      - control-plane
+      - /airlock-control-plane
+      - --listen=:8443
+      - --admin-listen=:8081
+      - --policy=/airlock/policies/demo-egress.yaml
+      - --workload=/airlock/workloads/demo-workload.yaml
+      - --worker-auth=spiffe
+      - --admin-auth=none
+      - --insecure
+      - --spiffe-socket=unix:///run/spire/agent-sockets/spire-agent.sock
+      - --heartbeat-stale-threshold=3
+    ports:
+      - "127.0.0.1:18311:8081"
+    volumes:
+      - ./spire/agent.conf:/run/spire/config/agent.conf:ro
+      - ./policy/demo-egress.yaml:/airlock/policies/demo-egress.yaml:ro
+      - ./policy/demo-workload.yaml:/airlock/workloads/demo-workload.yaml:ro
+      - spire-bootstrap:/run/spire/bootstrap:ro
+
+  proxy-worker:
+    build:
+      context: ../../..
+      dockerfile: examples/compose/spiffe-envoy/Dockerfile.airlock-spire
+    depends_on:
+      control-plane:
+        condition: service_started
+      spire-bootstrap:
+        condition: service_healthy
+    command:
+      - proxy-worker
+      - /airlock-proxy-worker
+      - --proxy
+      - http:envoy@0.0.0.0:50051
+      - --control-plane-url
+      - https://control-plane:8443
+      - --control-plane-server-id
+      - spiffe://airlock.local/compose/spiffe-envoy/control-plane
+      - --workload-identity
+      - spiffe://airlock.local/compose/spiffe-envoy/proxy-worker
+      - --spiffe-socket
+      - unix:///run/spire/agent-sockets/spire-agent.sock
+      - --heartbeat-interval
+      - 2s
+    volumes:
+      - ./spire/agent.conf:/run/spire/config/agent.conf:ro
+      - spire-bootstrap:/run/spire/bootstrap:ro
+      - ./secrets/demo-secret:/run/airlock/secrets/demo-secret:ro
+
+  envoy:
+    image: envoyproxy/envoy:v1.31.0
+    depends_on:
+      - proxy-worker
+      - echo
+    command:
+      - -c
+      - /etc/envoy/envoy.yaml
+      - --log-level
+      - info
+    ports:
+      - "127.0.0.1:18300:10000"
+      - "127.0.0.1:18301:9901"
+    volumes:
+      - ./envoy.yaml:/etc/envoy/envoy.yaml:ro
+
+  echo:
+    build:
+      context: ../../..
+      dockerfile: examples/compose/_shared/echo-server/Dockerfile
+    networks:
+      default:
+        aliases:
+          - demo.local
+
+  curl-workload:
+    image: curlimages/curl:8.11.1
+    depends_on:
+      - envoy
+    command:
+      - sh
+      - -ec
+      - |
+        until curl -fsS --proxy http://envoy:10000 http://demo.local:8080/allowed | grep -q 'x-airlock-demo-secret=compose-secret'; do
+          sleep 1
+        done
+        echo "allowed request passed through Envoy with proxy-injected secret"
+        if curl -fsS --proxy http://envoy:10000 http://blocked.local:8080/blocked >/tmp/blocked.out 2>/tmp/blocked.err; then
+          echo "blocked request unexpectedly succeeded" >&2
+          cat /tmp/blocked.out >&2
+          exit 1
+        fi
+        echo "denied request failed closed"

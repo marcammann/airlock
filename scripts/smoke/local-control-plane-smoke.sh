@@ -32,8 +32,7 @@ upstream_pid=$!
 (
   go run ./cmd/airlock-control-plane \
     --listen "127.0.0.1:$CONTROL_PLANE_PORT" \
-    --worker-auth none \
-    --insecure-dev-mode \
+    --insecure \
     --policy fixtures/policies/local-http.yaml \
     --workload fixtures/workloads/local-http.yaml
 ) >"$tmpdir/control-plane.log" 2>&1 &
@@ -51,8 +50,7 @@ curl -fsS "http://127.0.0.1:$CONTROL_PLANE_PORT/readyz" >/dev/null
   AIRLOCK_TEST_TOKEN=local-control-plane-token go run ./cmd/airlock-proxy-worker \
     --proxy "http:builtin@127.0.0.1:$PROXY_PORT" \
     --control-plane-url "http://127.0.0.1:$CONTROL_PLANE_PORT" \
-    --control-plane-auth none \
-    --insecure-dev-mode \
+    --insecure \
     --workload-identity "$WORKLOAD_IDENTITY" \
     --heartbeat-interval 0
 ) >"$tmpdir/proxy-worker.log" 2>&1 &

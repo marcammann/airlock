@@ -2,13 +2,22 @@ package controlplane
 
 import (
 	"bytes"
+	"context"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	admissionv1 "k8s.io/api/admission/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	kruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	ctrladmission "sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
 func TestInjectionWebhookInjectsEnvoyAndProxyWorker(t *testing.T) {
@@ -79,6 +88,69 @@ func TestInjectionWebhookInjectsEnvoyAndProxyWorker(t *testing.T) {
 	}
 	if !patchAddsEnvVar(patch, 0, "NO_PROXY", "127.0.0.1,localhost,::1") {
 		t.Fatalf("patch does not add app NO_PROXY env var: %#v", patch)
+	}
+}
+
+func TestInjectionAdmissionHandlerInjectsEnvoyAndProxyWorker(t *testing.T) {
+	server := testInjectionServer(t)
+	request := ctrladmission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
+		UID:       types.UID("test-uid"),
+		Kind:      metav1.GroupVersionKind{Version: "v1", Kind: "Pod"},
+		Namespace: "demo",
+		Object: kruntime.RawExtension{Raw: mustRawJSON(t, map[string]any{
+			"metadata": map[string]any{
+				"name":      "code-agent-injected",
+				"namespace": "demo",
+				"annotations": map[string]string{
+					InjectionEnabledAnnotation:  "true",
+					InjectionWorkloadAnnotation: "code-agent",
+				},
+			},
+			"spec": map[string]any{
+				"serviceAccountName": "code-agent",
+				"containers": []map[string]any{{
+					"name":  "app",
+					"image": "curlimages/curl:8.10.1",
+				}},
+			},
+		})},
+	}}
+
+	response := NewInjectionAdmissionHandler(server, InjectionOptions{}).Handle(context.Background(), request)
+	if !response.Allowed {
+		t.Fatalf("allowed = false, result = %#v", response.Result)
+	}
+	if response.PatchType == nil || *response.PatchType != admissionv1.PatchTypeJSONPatch {
+		t.Fatalf("patchType = %#v, want JSONPatch", response.PatchType)
+	}
+
+	var patch []jsonPatchOperation
+	if err := json.Unmarshal(response.Patch, &patch); err != nil {
+		t.Fatal(err)
+	}
+	if !patchAddsContainer(patch, "envoy") {
+		t.Fatalf("patch does not add envoy container: %#v", patch)
+	}
+	if !patchAddsContainer(patch, "proxy-worker") {
+		t.Fatalf("patch does not add proxy-worker container: %#v", patch)
+	}
+}
+
+func TestWebhookHandlerRejectsNonPodKind(t *testing.T) {
+	server := testInjectionServer(t)
+	request := ctrladmission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
+		UID:       types.UID("test-uid"),
+		Kind:      metav1.GroupVersionKind{Version: "v1", Kind: "Service"},
+		Namespace: "demo",
+		Object:    kruntime.RawExtension{Raw: mustRawJSON(t, map[string]any{})},
+	}}
+
+	response := NewInjectionAdmissionHandler(server, InjectionOptions{}).Handle(context.Background(), request)
+	if response.Allowed {
+		t.Fatal("allowed = true, want non-Pod kind rejection")
+	}
+	if response.Result == nil || !strings.Contains(response.Result.Message, "kind must be Pod") {
+		t.Fatalf("result = %#v, want non-Pod rejection message", response.Result)
 	}
 }
 
@@ -247,6 +319,74 @@ func TestInjectionWebhookDeniesMismatchedWorkloadAnnotation(t *testing.T) {
 	}
 }
 
+func TestWebhookRejectsNonPodKind(t *testing.T) {
+	server := testInjectionServer(t)
+	review := admissionReview{
+		APIVersion: "admission.k8s.io/v1",
+		Kind:       "AdmissionReview",
+		Request: &admissionRequest{
+			UID:       "test-uid",
+			Kind:      admissionKind{Kind: "Service"},
+			Namespace: "demo",
+			Object:    mustRawJSON(t, map[string]any{}),
+		},
+	}
+
+	response := postAdmissionReview(t, server, review)
+	if response.Response.Allowed {
+		t.Fatalf("allowed = true, want false")
+	}
+	if response.Response.Status == nil || !strings.Contains(response.Response.Status.Message, "kind must be Pod") {
+		t.Fatalf("status = %#v, want non-Pod rejection", response.Response.Status)
+	}
+}
+
+func TestWebhookRejectsOversizedBody(t *testing.T) {
+	server := testInjectionServer(t)
+	body := `{"apiVersion":"admission.k8s.io/v1","kind":"AdmissionReview","request":{"uid":"test-uid","kind":{"kind":"Pod"},"object":"` + strings.Repeat("x", 1<<20) + `"}}`
+	request := httptest.NewRequest(http.MethodPost, "/mutate/v1/pods", strings.NewReader(body))
+	response := httptest.NewRecorder()
+
+	NewInjectionWebhookHandler(server, InjectionOptions{}).ServeHTTP(response, request)
+
+	out := decodeAdmissionReviewResponse(t, response)
+	if out.Response.Allowed {
+		t.Fatalf("allowed = true, want false")
+	}
+	if out.Response.Status == nil || !strings.Contains(out.Response.Status.Message, "request body too large") {
+		t.Fatalf("status = %#v, want oversized body rejection", out.Response.Status)
+	}
+}
+
+func TestWebhookRejectsUnauthenticatedCaller(t *testing.T) {
+	server := testInjectionServer(t)
+	review := admissionReview{
+		APIVersion: "admission.k8s.io/v1",
+		Kind:       "AdmissionReview",
+		Request: &admissionRequest{
+			UID:       "test-uid",
+			Namespace: "demo",
+			Object:    mustRawJSON(t, map[string]any{}),
+		},
+	}
+	body, err := json.Marshal(review)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/mutate/v1/pods", bytes.NewReader(body))
+	response := httptest.NewRecorder()
+
+	NewInjectionWebhookHandler(server, InjectionOptions{WebhookClientCAs: x509.NewCertPool()}).ServeHTTP(response, request)
+
+	out := decodeAdmissionReviewResponse(t, response)
+	if out.Response.Allowed {
+		t.Fatalf("allowed = true, want false")
+	}
+	if out.Response.Status == nil || !strings.Contains(out.Response.Status.Message, "client certificate is required") {
+		t.Fatalf("status = %#v, want client certificate rejection", out.Response.Status)
+	}
+}
+
 func testInjectionServer(t *testing.T) *Server {
 	t.Helper()
 	store, err := LoadPolicyStoreWithSecretProviderConfigs(
@@ -265,6 +405,9 @@ func testInjectionServer(t *testing.T) *Server {
 
 func postAdmissionReview(t *testing.T, server *Server, review admissionReview) admissionReview {
 	t.Helper()
+	if review.Request != nil && review.Request.Kind.Kind == "" {
+		review.Request.Kind = admissionKind{Kind: "Pod"}
+	}
 	body, err := json.Marshal(review)
 	if err != nil {
 		t.Fatal(err)
@@ -275,6 +418,11 @@ func postAdmissionReview(t *testing.T, server *Server, review admissionReview) a
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", response.Code)
 	}
+	return decodeAdmissionReviewResponse(t, response)
+}
+
+func decodeAdmissionReviewResponse(t *testing.T, response *httptest.ResponseRecorder) admissionReview {
+	t.Helper()
 	var out admissionReview
 	if err := json.NewDecoder(response.Body).Decode(&out); err != nil {
 		t.Fatal(err)

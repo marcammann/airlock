@@ -1,0 +1,19 @@
+apiVersion: airlock.dev/v1alpha1
+kind: AirlockPolicy
+metadata:
+  name: demo-egress
+  namespace: airlock-system
+spec:
+  egress:
+    - name: demo-echo
+      scheme: http
+      host: demo.local
+      port: 8080
+      rewrites:
+        - target: header
+          name: X-Airlock-Demo-Secret
+          valueTemplate: "{{secret}}"
+          valueFrom:
+            provider: file
+            name: demo-secret
+            file: /run/airlock/secrets/demo-secret

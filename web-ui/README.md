@@ -27,8 +27,7 @@ cd ../control-plane
 go run ./cmd/airlock-control-plane \
   --listen 127.0.0.1:18088 \
   --admin-listen 127.0.0.1:18089 \
-  --worker-auth none \
-  --insecure-dev-mode \
+  --insecure \
   --admin-auth oidc \
   --admin-oidc-issuer https://issuer.example.test \
   --admin-oidc-audience airlock-web \
@@ -53,13 +52,12 @@ AIRLOCK_WEB_ALLOWED_DOMAINS=example.test \
 npm run dev
 ```
 
-For local-only development without an OIDC provider, start the admin listener
-with `--admin-auth dev-token --admin-dev-token dev --insecure-dev-mode`, then
-run:
+For local-only development without an OIDC provider, start the control plane
+with `--insecure`, then run:
 
 ```sh
 AIRLOCK_CONTROL_PLANE_URL=http://127.0.0.1:18089 \
-AIRLOCK_CONTROL_PLANE_TOKEN=dev \
+AIRLOCK_CONTROL_PLANE_TOKEN= \
 AIRLOCK_WEB_AUTH_MODE=dev \
 AIRLOCK_WEB_DEV_ROLES=admin \
 npm run dev
@@ -97,7 +95,7 @@ token. The token must not be exposed to browser JavaScript.
 
 `AIRLOCK_WEB_AUTH_MODE=dev` is only for local demos. It creates a local signed
 session without an external OIDC provider and should be paired with explicit
-control-plane `--insecure-dev-mode`.
+control-plane `--insecure`.
 
 ## Production Direction
 
