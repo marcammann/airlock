@@ -263,3 +263,22 @@ func DecisionFields(method string, destination Destination, rule *EgressRule, ex
 	}
 	return fields
 }
+
+// FormatDecisionLog builds a structured decision log message for a proxy request.
+// transport identifies the proxy path (e.g. "request", "ext_proc request", "ext_proc CONNECT").
+// decision is "allowed" or "denied". extra is appended verbatim at the end (may be empty).
+func FormatDecisionLog(transport, decision string, policy CompiledPolicy, rule *EgressRule, method string, destination Destination, extra string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s %s policy=%s policy_version=%s", decision, transport, policy.PolicyName, policy.Version)
+	if rule != nil && rule.Name != "" {
+		fmt.Fprintf(&b, " rule=%s", rule.Name)
+	}
+	if method != "" {
+		fmt.Fprintf(&b, " method=%s", method)
+	}
+	fmt.Fprintf(&b, " destination=%s:%d", destination.Host, destination.Port)
+	if extra != "" {
+		fmt.Fprintf(&b, " %s", extra)
+	}
+	return b.String()
+}

@@ -5,14 +5,17 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	airlockv1 "github.com/marcammann/airlock/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/rest"
 	ctrlcache "sigs.k8s.io/controller-runtime/pkg/cache"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/client/config"
@@ -20,6 +23,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	ctrlwebhook "sigs.k8s.io/controller-runtime/pkg/webhook"
 )
+
+const maxKubernetesResponseBytes = 4 << 20 // 4 MiB
 
 type kubernetesControllerRuntime struct {
 	Manager      ctrlmanager.Manager
@@ -49,6 +54,7 @@ func newKubernetesDirectClient() (ctrlclient.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load Kubernetes config: %w", err)
 	}
+	applyKubernetesResponseLimit(restConfig)
 	directClient, err := ctrlclient.New(restConfig, ctrlclient.Options{Scheme: scheme})
 	if err != nil {
 		return nil, fmt.Errorf("create Kubernetes client: %w", err)
@@ -65,6 +71,7 @@ func newKubernetesControllerRuntime(namespace string, leaderElection bool, syncP
 	if err != nil {
 		return nil, fmt.Errorf("load Kubernetes config: %w", err)
 	}
+	applyKubernetesResponseLimit(restConfig)
 	directClient, err := ctrlclient.New(restConfig, ctrlclient.Options{Scheme: scheme})
 	if err != nil {
 		return nil, fmt.Errorf("create Kubernetes client: %w", err)
@@ -167,4 +174,54 @@ func splitKubernetesWebhookListenAddress(listen string) (string, int, error) {
 		return "", 0, fmt.Errorf("--webhook-listen port must be a positive integer")
 	}
 	return host, port, nil
+}
+
+// applyKubernetesResponseLimit wraps the REST config's transport so every
+// response body from the Kubernetes API server is capped at
+// maxKubernetesResponseBytes. This prevents a buggy or malicious API server
+// from OOM-killing the control plane via an oversized list response.
+func applyKubernetesResponseLimit(config *rest.Config) {
+	wrap := config.WrapTransport
+	config.WrapTransport = func(rt http.RoundTripper) http.RoundTripper {
+		if wrap != nil {
+			rt = wrap(rt)
+		}
+		return &limitedResponseTransport{base: rt, limit: maxKubernetesResponseBytes}
+	}
+}
+
+type limitedResponseTransport struct {
+	base  http.RoundTripper
+	limit int64
+}
+
+func (t *limitedResponseTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		return resp, err
+	}
+	resp.Body = &limitedReadCloser{r: io.LimitReader(resp.Body, t.limit+1), limit: t.limit}
+	return resp, nil
+}
+
+type limitedReadCloser struct {
+	r     io.Reader
+	limit int64
+	read  int64
+}
+
+func (l *limitedReadCloser) Read(p []byte) (int, error) {
+	n, err := l.r.Read(p)
+	l.read += int64(n)
+	if err == nil && l.read > l.limit {
+		return n, fmt.Errorf("kubernetes response body exceeds %d bytes", l.limit)
+	}
+	return n, err
+}
+
+func (l *limitedReadCloser) Close() error {
+	if c, ok := l.r.(io.Closer); ok {
+		return c.Close()
+	}
+	return nil
 }

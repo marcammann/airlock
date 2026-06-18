@@ -1571,3 +1571,46 @@ func signOIDCTestToken(t *testing.T, key *rsa.PrivateKey, keyID string, issuer s
 	}
 	return signed
 }
+
+func TestReplaceStoreConcurrentReads(t *testing.T) {
+	server := newFixtureServerWithAuth(t, AuthModeNone, nil)
+
+	store2, err := LoadPolicyStore(
+		[]string{filepath.Join("..", "..", "fixtures", "policies", "valid.yaml")},
+		[]string{filepath.Join("..", "..", "fixtures", "workloads", "code-agent.yaml")},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					request := httptest.NewRequest(http.MethodGet, "/v1/admin/policies", nil)
+					response := httptest.NewRecorder()
+					server.AdminHandler().ServeHTTP(response, request)
+					if response.Code != http.StatusOK {
+						t.Errorf("status = %d, want %d", response.Code, http.StatusOK)
+						return
+					}
+				}
+			}
+		}()
+	}
+
+	for i := 0; i < 100; i++ {
+		server.ReplaceStore(store2)
+	}
+
+	close(stop)
+	wg.Wait()
+}

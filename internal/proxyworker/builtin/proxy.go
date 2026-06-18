@@ -224,14 +224,7 @@ func (s *ProxyServer) handleGoProxyRequest(req *http.Request, ctx *goproxy.Proxy
 	rule := egress.FindEgressRule(policy, destination)
 	if rule == nil {
 		setHTTPSpanAttributes(req, destination, req.Method, workertel.DecisionDeny)
-		s.log.Record(workertel.DecisionDeny, fmt.Sprintf(
-			"denied request policy=%s policy_version=%s method=%s destination=%s:%d",
-			policy.PolicyName,
-			policy.Version,
-			req.Method,
-			destination.Host,
-			destination.Port,
-		), egress.DecisionFields(req.Method, destination, nil, nil))
+		s.log.Record(workertel.DecisionDeny, egress.FormatDecisionLog("request", "denied", policy, nil, req.Method, destination, ""), egress.DecisionFields(req.Method, destination, nil, nil))
 		return req, goproxy.NewResponse(req, goproxy.ContentTypeText, http.StatusForbidden, "egress denied")
 	}
 
@@ -239,16 +232,7 @@ func (s *ProxyServer) handleGoProxyRequest(req *http.Request, ctx *goproxy.Proxy
 	headers := egress.HeadersFromHTTPRequest(req)
 	if err := egress.ApplyRewrites(&headers, rule.Rewrites, s.secrets, &redactor); err != nil {
 		setHTTPSpanAttributes(req, destination, req.Method, workertel.DecisionSecretError)
-		s.log.Record(workertel.DecisionSecretError, fmt.Sprintf(
-			"denied request policy=%s policy_version=%s rule=%s method=%s destination=%s:%d dependency=secret error=%v",
-			policy.PolicyName,
-			policy.Version,
-			rule.Name,
-			req.Method,
-			destination.Host,
-			destination.Port,
-			err,
-		), egress.DecisionFields(req.Method, destination, rule, map[string]string{"dependency": "secret", "reason": "secret_dependency_failed"}))
+		s.log.Record(workertel.DecisionSecretError, egress.FormatDecisionLog("request", "denied", policy, rule, req.Method, destination, fmt.Sprintf("dependency=secret error=%v", err)), egress.DecisionFields(req.Method, destination, rule, map[string]string{"dependency": "secret", "reason": "secret_dependency_failed"}))
 		return req, goproxy.NewResponse(req, goproxy.ContentTypeText, http.StatusBadGateway, "secret dependency unavailable")
 	}
 	egress.ApplyHeadersToHTTPRequest(req, headers)
@@ -264,16 +248,7 @@ func (s *ProxyServer) handleGoProxyRequest(req *http.Request, ctx *goproxy.Proxy
 	ctx.UserData = goProxyRequestMetadata{Policy: policy, Rule: rule, Destination: destination, Method: req.Method}
 
 	setHTTPSpanAttributes(req, destination, req.Method, workertel.DecisionAllow)
-	s.log.Record(workertel.DecisionAllow, redactor.Redact(fmt.Sprintf(
-		"allowed request policy=%s policy_version=%s rule=%s method=%s destination=%s:%d headers=%+v",
-		policy.PolicyName,
-		policy.Version,
-		rule.Name,
-		req.Method,
-		destination.Host,
-		destination.Port,
-		headers,
-	)), egress.DecisionFields(req.Method, destination, rule, nil))
+	s.log.Record(workertel.DecisionAllow, redactor.Redact(egress.FormatDecisionLog("request", "allowed", policy, rule, req.Method, destination, fmt.Sprintf("headers=%+v", headers))), egress.DecisionFields(req.Method, destination, rule, nil))
 	return req, nil
 }
 

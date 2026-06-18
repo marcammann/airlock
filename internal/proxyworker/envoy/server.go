@@ -8,7 +8,6 @@ import (
 	secretv3 "github.com/envoyproxy/go-control-plane/envoy/service/secret/v3"
 	"github.com/marcammann/airlock/internal/proxyworker/builtin"
 	"github.com/marcammann/airlock/internal/proxyworker/egress"
-	"github.com/marcammann/airlock/internal/proxyworker/extproc"
 	"github.com/marcammann/airlock/internal/proxyworker/sds"
 	workersecrets "github.com/marcammann/airlock/internal/proxyworker/secrets"
 	workertel "github.com/marcammann/airlock/internal/proxyworker/telemetry"
@@ -18,7 +17,7 @@ import (
 // Server combines Envoy ext_proc and optional SDS services on one gRPC server.
 type Server struct {
 	grpc    *grpc.Server
-	extProc *extproc.ExtProcGRPCServer
+	extProc *ExtProcGRPCServer
 }
 
 // NewServer creates an Envoy integration server for the supplied policy.
@@ -26,12 +25,12 @@ func NewServer(policy egress.CompiledPolicy, secrets workersecrets.SecretProvide
 	if log == nil {
 		log = workertel.NewEventLog(io.Discard)
 	}
-	extProc, err := extproc.NewExtProcGRPCServer(policy, secrets, log)
+	extProc, err := NewExtProcGRPCServer(policy, secrets, log)
 	if err != nil {
 		return nil, err
 	}
-	server := extproc.NewEnvoyGRPCServer()
-	extproc.RegisterExternalProcessorServer(server, extProc)
+	server := NewEnvoyGRPCServer()
+	RegisterExternalProcessorServer(server, extProc)
 	if ca != nil {
 		secretv3.RegisterSecretDiscoveryServiceServer(server, sds.NewServer(ca, log))
 		log.Record(workertel.DecisionNone, "airlock-proxy-worker envoy SDS enabled")
@@ -46,5 +45,5 @@ func (s *Server) UpdatePolicy(policy egress.CompiledPolicy) {
 
 // Serve starts the Envoy gRPC services until the context is canceled.
 func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
-	return extproc.ServeGRPC(ctx, s.grpc, listener)
+	return ServeGRPC(ctx, s.grpc, listener)
 }

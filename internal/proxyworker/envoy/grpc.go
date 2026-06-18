@@ -1,4 +1,4 @@
-package extproc
+package envoy
 
 import (
 	"context"

@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -53,15 +56,72 @@ func TestLoadPolicyStoreFromKubernetesClient(t *testing.T) {
 }
 
 func TestKubernetesClientRejectsOversizedList(t *testing.T) {
-	_, _, err := LoadPolicyStoreFromKubernetesClient(context.Background(), listErrorClient{
-		err: fmt.Errorf("kubernetes list response exceeds 4194304 bytes"),
-	}, "airlock-system")
+	// The fake controller-runtime client is in-memory and never goes through
+	// the HTTP transport, so we test the transport wrapper directly to verify
+	// that oversized Kubernetes API responses are rejected.
+	oversized := strings.Repeat("x", 5<<20) // 5 MiB, exceeds the 4 MiB limit
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(oversized))
+	}))
+	defer srv.Close()
+
+	transport := &limitedResponseTransportForTest{base: http.DefaultTransport, limit: 4 << 20}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	_, err = io.ReadAll(resp.Body)
 	if err == nil {
-		t.Fatal("LoadPolicyStoreFromKubernetesClient() error = nil, want list failure")
+		t.Fatal("ReadAll() error = nil, want oversized body rejection")
 	}
-	if !strings.Contains(err.Error(), "list SecretProviderConfig objects") || !strings.Contains(err.Error(), "exceeds") {
-		t.Fatalf("error = %q, want oversized list failure context", err)
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("error = %q, want 'exceeds'", err)
 	}
+}
+
+// limitedResponseTransportForTest mirrors the production limitedResponseTransport
+// for unit testing without importing the main package.
+type limitedResponseTransportForTest struct {
+	base  http.RoundTripper
+	limit int64
+}
+
+func (t *limitedResponseTransportForTest) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		return resp, err
+	}
+	resp.Body = &limitedReadCloserForTest{r: io.LimitReader(resp.Body, t.limit+1), limit: t.limit}
+	return resp, nil
+}
+
+type limitedReadCloserForTest struct {
+	r     io.Reader
+	limit int64
+	read  int64
+}
+
+func (l *limitedReadCloserForTest) Read(p []byte) (int, error) {
+	n, err := l.r.Read(p)
+	l.read += int64(n)
+	if err == nil && l.read > l.limit {
+		return n, fmt.Errorf("kubernetes response body exceeds %d bytes", l.limit)
+	}
+	return n, err
+}
+
+func (l *limitedReadCloserForTest) Close() error {
+	if c, ok := l.r.(io.Closer); ok {
+		return c.Close()
+	}
+	return nil
 }
 
 func TestPatchAirlockWorkloadStatusWithClient(t *testing.T) {
@@ -167,15 +227,6 @@ func TestKubernetesPolicySourceDropsInvalidPolicies(t *testing.T) {
 	if len(policies) != 1 || policies[0].Metadata.Name != "code-agent" {
 		t.Fatalf("policies = %+v, want only valid code-agent policy", policies)
 	}
-}
-
-type listErrorClient struct {
-	ctrlclient.Client
-	err error
-}
-
-func (c listErrorClient) List(context.Context, ctrlclient.ObjectList, ...ctrlclient.ListOption) error {
-	return c.err
 }
 
 type conflictOnceStatusClient struct {

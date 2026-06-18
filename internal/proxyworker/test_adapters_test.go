@@ -11,7 +11,7 @@ import (
 	airlockv1 "github.com/marcammann/airlock/api/v1alpha1"
 	"github.com/marcammann/airlock/internal/proxyworker/builtin"
 	"github.com/marcammann/airlock/internal/proxyworker/egress"
-	"github.com/marcammann/airlock/internal/proxyworker/extproc"
+	"github.com/marcammann/airlock/internal/proxyworker/envoy"
 	workerpolicy "github.com/marcammann/airlock/internal/proxyworker/policy"
 	workersecrets "github.com/marcammann/airlock/internal/proxyworker/secrets"
 	workertel "github.com/marcammann/airlock/internal/proxyworker/telemetry"
@@ -61,23 +61,23 @@ func GenerateCertificateAuthority(commonName string) ([]byte, []byte, error) {
 	return builtin.GenerateCertificateAuthority(commonName)
 }
 
-type ExtProcDecision = extproc.ExtProcDecision
-type ExtProcGRPCServer = extproc.ExtProcGRPCServer
+type ExtProcDecision = envoy.ExtProcDecision
+type ExtProcGRPCServer = envoy.ExtProcGRPCServer
 
 func EvaluateExtProcHeaders(policy CompiledPolicy, requestHeaders []egress.Header, secrets workersecrets.SecretProvider, log *workertel.EventLog) (ExtProcDecision, error) {
-	return extproc.EvaluateExtProcHeaders(policy, requestHeaders, secrets, log)
+	return envoy.EvaluateExtProcHeaders(policy, requestHeaders, secrets, log)
 }
 
 func EvaluateExtProcHeadersWithContext(ctx context.Context, policy CompiledPolicy, requestHeaders []egress.Header, secrets workersecrets.SecretProvider, log *workertel.EventLog) (ExtProcDecision, error) {
-	return extproc.EvaluateExtProcHeadersWithContext(ctx, policy, requestHeaders, secrets, log)
+	return envoy.EvaluateExtProcHeadersWithContext(ctx, policy, requestHeaders, secrets, log)
 }
 
 func NewExtProcGRPCServer(policy CompiledPolicy, secrets workersecrets.SecretProvider, log *workertel.EventLog) (*ExtProcGRPCServer, error) {
-	return extproc.NewExtProcGRPCServer(policy, secrets, log)
+	return envoy.NewExtProcGRPCServer(policy, secrets, log)
 }
 
 func ServeExtProc(ctx context.Context, listener net.Listener, policy CompiledPolicy, secrets workersecrets.SecretProvider, log *workertel.EventLog) error {
-	return extproc.ServeExtProc(ctx, listener, policy, secrets, log)
+	return envoy.ServeExtProc(ctx, listener, policy, secrets, log)
 }
 
 type DecisionEvent = workertel.DecisionEvent

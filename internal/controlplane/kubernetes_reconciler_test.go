@@ -181,3 +181,47 @@ func newAirlockFakeClient(t *testing.T) ctrlclient.Client {
 		).
 		Build()
 }
+
+func TestReconcileVaultFailureAfterSPIRESuccess(t *testing.T) {
+	kube := newAirlockFakeClient(t)
+	var storeReplaced bool
+	var patched bool
+	var gotSPIREReady bool
+	var gotVaultReady bool
+
+	_, err := ReconcileKubernetesResources(context.Background(), KubernetesReconcileOptions{
+		Client:         kube,
+		Namespace:      "airlock-system",
+		SPIREReconcile: true,
+		ReconcileSPIRE: func(context.Context, *PolicyStore, SPIREReconcileOptions) (SPIREReconcileResult, error) {
+			return SPIREReconcileResult{ClusterSPIFFEIDs: 1}, nil
+		},
+		VaultReconcile: true,
+		ReconcileVault: func(context.Context, *PolicyStore, VaultReconcileOptions) (VaultReconcileResult, error) {
+			return VaultReconcileResult{}, errors.New("vault unavailable")
+		},
+		ReplaceStore: func(_ *PolicyStore) {
+			storeReplaced = true
+		},
+		StatusPatcher: func(_ context.Context, _ ctrlclient.Client, updates []KubernetesPolicyStatusUpdate, spireReady bool, vaultReady bool) {
+			patched = true
+			gotSPIREReady = spireReady
+			gotVaultReady = vaultReady
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "reconcile Vault") {
+		t.Fatalf("err = %v, want Vault reconcile error", err)
+	}
+	if storeReplaced {
+		t.Fatal("ReplaceStore was called after Vault failure; want fail-closed (store NOT replaced)")
+	}
+	if !patched {
+		t.Fatal("StatusPatcher was not called")
+	}
+	if !gotSPIREReady {
+		t.Fatalf("patched spireReady = false, want true (SPIRE succeeded)")
+	}
+	if gotVaultReady {
+		t.Fatalf("patched vaultReady = true, want false (Vault failed)")
+	}
+}

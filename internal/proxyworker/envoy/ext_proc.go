@@ -1,4 +1,4 @@
-package extproc
+package envoy
 
 import (
 	"context"
@@ -66,26 +66,12 @@ func EvaluateExtProcHeadersWithContext(ctx context.Context, policy CompiledPolic
 	rule := egress.FindEgressRule(policy, destination)
 	if rule == nil {
 		setExtProcSpanAttributes(span, destination, method, workertel.DecisionDeny)
-		log.Record(workertel.DecisionDeny, fmt.Sprintf(
-			"denied ext_proc request policy=%s policy_version=%s method=%s destination=%s:%d",
-			policy.PolicyName,
-			policy.Version,
-			method,
-			destination.Host,
-			destination.Port,
-		), egress.DecisionFields(method, destination, nil, nil))
+		log.Record(workertel.DecisionDeny, egress.FormatDecisionLog("ext_proc request", "denied", policy, nil, method, destination, ""), egress.DecisionFields(method, destination, nil, nil))
 		return ExtProcDecision{Deny: true, Status: 403, Body: "egress denied", Details: "airlock_egress_denied"}, nil
 	}
 	if strings.EqualFold(method, "CONNECT") {
 		setExtProcSpanAttributes(span, destination, method, workertel.DecisionAllow)
-		log.Record(workertel.DecisionAllow, fmt.Sprintf(
-			"allowed ext_proc CONNECT policy=%s policy_version=%s rule=%s destination=%s:%d",
-			policy.PolicyName,
-			policy.Version,
-			rule.Name,
-			destination.Host,
-			destination.Port,
-		), egress.DecisionFields(method, destination, rule, nil))
+		log.Record(workertel.DecisionAllow, egress.FormatDecisionLog("ext_proc CONNECT", "allowed", policy, rule, "", destination, ""), egress.DecisionFields(method, destination, rule, nil))
 		return ExtProcDecision{Continue: true}, nil
 	}
 
@@ -93,16 +79,7 @@ func EvaluateExtProcHeadersWithContext(ctx context.Context, policy CompiledPolic
 	rewritten := append([]egress.Header(nil), requestHeaders...)
 	if err := egress.ApplyRewrites(&rewritten, rule.Rewrites, secrets, &redactor); err != nil {
 		setExtProcSpanAttributes(span, destination, method, workertel.DecisionSecretError)
-		log.Record(workertel.DecisionSecretError, fmt.Sprintf(
-			"denied ext_proc request policy=%s policy_version=%s rule=%s method=%s destination=%s:%d dependency=secret error=%v",
-			policy.PolicyName,
-			policy.Version,
-			rule.Name,
-			method,
-			destination.Host,
-			destination.Port,
-			err,
-		), egress.DecisionFields(method, destination, rule, map[string]string{"dependency": "secret", "reason": "secret_dependency_failed"}))
+		log.Record(workertel.DecisionSecretError, egress.FormatDecisionLog("ext_proc request", "denied", policy, rule, method, destination, fmt.Sprintf("dependency=secret error=%v", err)), egress.DecisionFields(method, destination, rule, map[string]string{"dependency": "secret", "reason": "secret_dependency_failed"}))
 		return ExtProcDecision{}, err
 	}
 	var mutations []egress.Header
@@ -112,16 +89,7 @@ func EvaluateExtProcHeadersWithContext(ctx context.Context, policy CompiledPolic
 		}
 	}
 	setExtProcSpanAttributes(span, destination, method, workertel.DecisionAllow)
-	log.Record(workertel.DecisionAllow, redactor.Redact(fmt.Sprintf(
-		"allowed ext_proc request policy=%s policy_version=%s rule=%s method=%s destination=%s:%d mutations=%+v",
-		policy.PolicyName,
-		policy.Version,
-		rule.Name,
-		method,
-		destination.Host,
-		destination.Port,
-		mutations,
-	)), egress.DecisionFields(method, destination, rule, nil))
+	log.Record(workertel.DecisionAllow, redactor.Redact(egress.FormatDecisionLog("ext_proc request", "allowed", policy, rule, method, destination, fmt.Sprintf("mutations=%+v", mutations))), egress.DecisionFields(method, destination, rule, nil))
 	return ExtProcDecision{Continue: true, Mutations: mutations}, nil
 }
 

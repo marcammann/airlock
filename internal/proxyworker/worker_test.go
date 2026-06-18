@@ -1121,6 +1121,46 @@ func recvString(t *testing.T, ch <-chan string) string {
 	}
 }
 
+func TestIPv6DestinationProxied(t *testing.T) {
+	listener, err := net.Listen("tcp", "[::1]:0")
+	if err != nil {
+		t.Skipf("IPv6 not available: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	upstreamAddr := listener.Addr().(*net.TCPAddr)
+	upstreamRequests := make(chan string, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		data, _ := readHTTPRequestBytes(conn)
+		upstreamRequests <- string(data)
+		_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"))
+	}()
+
+	port := uint16(upstreamAddr.Port)
+	log := NewMemoryEventLog()
+	proxy := NewProxyServer(testPolicy("::1", port), staticSecretProvider{value: "test-token"}, log)
+	proxyAddr := startProxy(t, proxy)
+
+	response := sendProxyRequest(t, proxyAddr, fmt.Sprintf(
+		"GET http://[::1]:%d/v1/models HTTP/1.1\r\nHost: [::1]:%d\r\nConnection: close\r\n\r\n",
+		port,
+		port,
+	))
+
+	if !strings.HasPrefix(response, "HTTP/1.1 200 OK") {
+		t.Fatalf("response = %q, want 200", response)
+	}
+	upstreamRequest := recvString(t, upstreamRequests)
+	if !strings.Contains(upstreamRequest, "GET /v1/models HTTP/1.1") {
+		t.Fatalf("upstream request = %q, want origin-form path", upstreamRequest)
+	}
+}
+
 func recvHeaders(t *testing.T, ch <-chan http.Header) http.Header {
 	t.Helper()
 	select {
